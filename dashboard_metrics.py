@@ -60,8 +60,9 @@ def snapshot_from_exports(files: dict[str, Path | bytes]) -> Snapshot:
     a["ttp"] = (a.launch - a.signup_date).dt.days
     age = (a.subscription_churn_date - a.signup_date).dt.days
     a["canceled"] = a.subscription_churn_date.le(a.end)
-    a["canceled_90d"] = age.between(15, 90) & a.canceled
-    a["eligible_90d"] = a.signup_date.add(90 * DAY).le(a.end) & ~age.le(14)
+    a["canceled_90d"] = age.between(0, 90) & a.canceled
+    a["eligible_90d"] = a.signup_date.add(90 * DAY).le(a.end)
+    a["subscribed_day_14"] = ~age.le(14)
 
     def events(mask):
         return builder.loc[mask].sort_values(["event_timestamp", "product_type"]).drop_duplicates(ID).set_index(ID)
@@ -101,7 +102,13 @@ def snapshot_from_exports(files: dict[str, Path | bytes]) -> Snapshot:
     keys = more.rename(columns={"published_date": "day"})[KEY + ["day"]].drop_duplicates()
     activity = actions.merge(keys.assign(published_again=True), on=KEY + ["day"], how="left")
     activity["published_again"] = activity.published_again.eq(True)
-    return Snapshot(a, activity, more, leads, cutoff)
+    return Snapshot(
+        a,
+        activity[[ID, "day", "published_again"]],
+        more[[ID, "published_date"]],
+        leads[[ID, "activity_date", "leads", "visitors"]],
+        cutoff,
+    )
 
 
 def select_accounts(a, filters):
@@ -139,7 +146,14 @@ def weekly_activation(a, week_or_month):
 def activation_funnel(a):
     counts = [len(a), int(a.created_asset.sum()), int(a.funnel_published.sum()), int(a.funnel_lead.sum())]
     stages = ["Signed up", "Opened builder and created asset", "First successful publish", "Received a first lead"]
-    return pd.DataFrame({"Stage": stages, "Count": counts, "Rate": [rate(n, len(a)) for n in counts]})
+    previous = [None, *counts[:-1]]
+    return pd.DataFrame({
+        "Stage": stages,
+        "Count": counts,
+        "Rate": [rate(n, counts[0]) for n in counts],
+        "From previous stage": [rate(n, p) for n, p in zip(counts, previous)],
+        "Drop-off": pd.array([p - n if p is not None else None for n, p in zip(counts, previous)], dtype="Int64"),
+    })
 
 
 def time_to_publish(a, split):
@@ -211,7 +225,7 @@ def quiet_accounts(snapshot, a, end):
     })
 
 
-def launch_cohorts(a, full_month_only=True):
+def launch_cohorts(a, full_month_only=True, *, date_window=None):
     a = a.loc[a.initially_active].copy()
     if full_month_only:
         end = a.launch.dt.to_period("M").dt.end_time.dt.normalize()
@@ -219,6 +233,11 @@ def launch_cohorts(a, full_month_only=True):
     a["month"] = a.launch.dt.strftime("%Y-%m")
     rows = []
     for label, g in by_group(a, "month"):
+        if date_window is not None:
+            month = pd.Period(label, freq="M")
+            lo, hi = date_window
+            if lo > month.start_time.normalize() or hi < month.end_time.normalize():
+                label += " (partial)"
         for col, window in [("active_weeks_5_8", "Weeks 5-8"), ("active_weeks_9_12", "Weeks 9-12")]:
             n = int(g[col].sum())
             rows.append((label, window, n, len(g), rate(n, len(g))))
@@ -227,9 +246,11 @@ def launch_cohorts(a, full_month_only=True):
 
 def churn_90d(a, split):
     eligible = a.loc[a.eligible_90d].copy()
-    eligible["publish_timing"] = "Unpublished by day 14"
-    eligible.loc[eligible.ttp.between(0, 7), "publish_timing"] = "Signup days 0-7"
-    eligible.loc[eligible.ttp.between(8, 14), "publish_timing"] = "Signup days 8-14"
+    if split == "publish_timing":
+        eligible = eligible.loc[eligible.subscribed_day_14].copy()
+        eligible["publish_timing"] = "Unpublished by day 14"
+        eligible.loc[eligible.ttp.between(0, 7), "publish_timing"] = "Signup days 0-7"
+        eligible.loc[eligible.ttp.between(8, 14), "publish_timing"] = "Signup days 8-14"
     return rate_table(eligible, eligible.canceled_90d, split)
 
 
