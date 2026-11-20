@@ -1,1 +1,33 @@
-# leadgen-dashboard
+# Lead Generation Dashboard
+
+Explore onboarding, account activity, retention, churn, and the validation recovery opportunity in the four case-study CSVs. Viewers can filter by device, agency size, plan, industry, and first builder product. Each chart has a table with its underlying counts. Rate charts show eligible denominators.
+
+## Deploy on Streamlit Community Cloud
+
+1. Put the contents of this folder at the root of a **private** GitHub repository. Keep all four exports in the `data/` folder. Include the `.streamlit` folder if you want the supplied theme.
+2. In [Streamlit Community Cloud](https://share.streamlit.io/), choose **Create app**, then select the private repository, its branch, and **`app.py`** as the main file. Streamlit installs the libraries listed in `requirements.txt`.
+3. Once the app opens, confirm its visibility is **Private**. Invite reviewers by email in the app's sharing controls. They can filter the dashboard and download the summary tables.
+
+The dashboard opens on the bundled May 31, 2026 snapshot. The bundled exports are compressed as `.csv.gz`. To refresh the shared version, replace those files or add the corresponding uncompressed `.csv` files with the same base names. **Filters  Data source  Upload four CSVs** previews another set of exports in the current session.
+
+## Run locally
+
+From this folder with Python 3.12 or 3.13:
+
+```sh
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
+```
+
+## Metric definitions
+
+| Metric | Denominator or time anchor |
+| --- | --- |
+| Day-7 activation | Signup cohort with 7 days of follow-up |
+| 28-day repeat publishing | First-publish cohort with 28 days of follow-up |
+| Established-account lead coverage | Accounts already published and subscribed when the trailing 28-day window starts |
+| Weekly activity | Live edits and later distinct publishes. The case-study view holds the initially active comparison panel fixed |
+| 90-day churn | Signup cohort with 90 days of follow-up, active as of signup day 14 |
+| Validation recovery scenario | Accounts with a first recorded validation error, a complete 7-day window, and no first publish in that window |
+
+`dashboard_metrics.py` reuses the assignment's data cleaning and activity definitions from `leadgen_supporting_analysis.py`. The dashboard uses the accounts export's reporting cutoff. It shows aggregate results and summary downloads.
