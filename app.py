@@ -13,6 +13,7 @@ import streamlit as st
 import dashboard_metrics as dm
 
 ROOT = Path(__file__).resolve().parent
+METRICS_SOURCES = (ROOT / "dashboard_metrics.py", ROOT / "leadgen_supporting_analysis.py")
 COLORS = ["#1B8174", "#355D80", "#DB8254", "#8F77A4", "#CFAB5C"]
 DATE_KEYS = ("health_dates", "activation_dates", "retention_dates", "quiet_end",
              "validation_dates", "churn_diagnostic_dates")
@@ -20,7 +21,8 @@ st.set_page_config(page_title="Lead Generation Dashboard", layout="wide")
 
 
 @st.cache_data(show_spinner="Reading the four CSV exports…")
-def load_bundled_snapshot():
+def load_bundled_snapshot(metrics_revision):
+    # The revision also invalidates cached account data when its schema changes.
     files = {}
     for key, name in dm.DEFAULT_EXPORT_NAMES.items():
         csv = ROOT / "data" / name
@@ -28,8 +30,8 @@ def load_bundled_snapshot():
     return dm.snapshot_from_exports(files)
 
 
-def load_uploaded_snapshot(files):
-    signature = tuple(sha256(content).digest() for content in files.values())
+def load_uploaded_snapshot(files, metrics_revision):
+    signature = (metrics_revision, tuple(sha256(content).digest() for content in files.values()))
     cached = st.session_state.get("uploaded_snapshot")
     if cached is None or cached[0] != signature:
         cached = (signature, dm.snapshot_from_exports(files))
@@ -480,12 +482,13 @@ def main():
                 uploads = {k: file.getvalue() for k, file in data.items()}
                 st.caption("Uploaded files are used for this session.")
     try:
+        metrics_revision = tuple(sha256(path.read_bytes()).digest() for path in METRICS_SOURCES)
         if uploads is None:
             if st.session_state.pop("uploaded_snapshot", None) is not None:
                 reset_dates()
-            s = load_bundled_snapshot()
+            s = load_bundled_snapshot(metrics_revision)
         else:
-            s = load_uploaded_snapshot(uploads)
+            s = load_uploaded_snapshot(uploads, metrics_revision)
     except (FileNotFoundError, KeyError, ValueError, pd.errors.ParserError) as exc:
         st.error(f"Could not load the CSVs. {exc}")
         st.stop()
