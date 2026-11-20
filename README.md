@@ -1,6 +1,6 @@
 # Lead Generation Dashboard
 
-Explore onboarding, account activity, retention, churn, and the validation recovery opportunity in the four case-study CSVs. Each view has its own filters for agency size, device, plan, industry, and first builder product. Onboarding also filters by opening-day template selection. Its Compare by control groups both the activation breakdown and the time-to-publish chart. Time to publish also has a switch for template use on the first live asset. The funnel uses the selected signup dates and sidebar filters.
+Explore onboarding, account activity, retention, churn, and the validation recovery opportunity in the four case-study CSVs. Each view has its own filters for agency size, device, plan, industry, and first builder product. Onboarding also filters by opening-day template selection. Its Compare by control groups both the activation breakdown and the time-to-publish chart. The funnel uses the selected signup dates and sidebar filters.
 
 ## Deploy on Streamlit Community Cloud
 

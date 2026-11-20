@@ -3,7 +3,7 @@
 from contextlib import nullcontext
 from hashlib import sha256
 from html import escape
-from math import ceil
+from math import ceil, floor
 from pathlib import Path
 
 import altair as alt
@@ -185,7 +185,8 @@ def activity_dates(snapshot, key):
     return start, end, cadence == "Month"
 
 
-def period_chart(frame, monthly, metric, *, key, fmt, details, height=175, color=COLORS[0], compact=False):
+def period_chart(frame, monthly, metric, *, key, fmt, details, height=175, color=COLORS[0],
+                 compact=False, y_domain=None):
     if frame.empty:
         st.info("Select a complete calendar week or month to see this trend.")
         return
@@ -198,12 +199,12 @@ def period_chart(frame, monthly, metric, *, key, fmt, details, height=175, color
     axis = alt.Axis(labelAngle=0, labelOverlap="greedy", labelPadding=7, labelFlush=True)
     if compact and monthly:
         axis.labelExpr = "slice(datum.label, 0, 3) + \" '\" + slice(datum.label, -2)"
+    scale = alt.Scale(domain=y_domain, nice=False, zero=False) if y_domain else alt.Scale(zero=True)
     chart = alt.Chart(data).mark_line(
         point=alt.OverlayMarkDef(size=43, filled=True, color=color), strokeWidth=2.3, color=color
     ).encode(
         x=alt.X("Calendar period:O", sort=labels.tolist(), title=None, axis=axis),
-        y=alt.Y(f"{metric}:Q", title=None, axis=alt.Axis(format=fmt, tickCount=4),
-                scale=alt.Scale(zero=True)),
+        y=alt.Y(f"{metric}:Q", title=None, axis=alt.Axis(format=fmt, tickCount=4), scale=scale),
         tooltip=[alt.Tooltip("Calendar period:O", title="Month" if monthly else "Week starting"),
                  alt.Tooltip(f"{metric}:Q", format=fmt),
                  *[alt.Tooltip(f"{name}:Q", format=",") for name in details if name != metric]],
@@ -246,23 +247,11 @@ def publish_percentiles(a, split_name):
     if publishers.empty:
         st.info("No accounts in this selection have a successful publish.")
         return
-    first_asset = st.toggle(
-        "Compare template use on the first live asset",
-        key="ttp_first_asset_template",
-        help="Overrides the shared comparison for this chart. This attribute is recorded when an asset goes live.",
-    )
-    if first_asset:
-        split = "first_asset_template"
-        publishers[split] = publishers.used_template.map(
-            {1: "Used a template", 0: "Without a template"}
-        ).fillna("Unknown")
-        order = ["Used a template", "Without a template", "Unknown"]
-    else:
-        split = dm.ONBOARDING_DIMENSIONS[split_name]
-        order = dm.TEMPLATE_GROUPS if split_name == dm.OPENING_TEMPLATE else "ascending"
-        if split_name == "Builder device":
-            publishers[split] = publishers[split].fillna("Unknown").str.title()
-        st.caption(f"Grouped by {split_name.lower()}.")
+    split = dm.ONBOARDING_DIMENSIONS[split_name]
+    order = dm.TEMPLATE_GROUPS if split_name == dm.OPENING_TEMPLATE else "ascending"
+    if split_name == "Builder device":
+        publishers[split] = publishers[split].fillna("Unknown").str.title()
+    st.caption(f"Grouped by {split_name.lower()}.")
 
     table = dm.time_to_publish(publishers, split).round(1)
     upper = max(5, ceil(table["P90 (days)"].max() / 5) * 5)
@@ -354,6 +343,40 @@ def onboarding(s, a, value):
     show_onboarding_trends(a, value)
 
 
+def show_active_return(returned, monthly):
+    available = returned.dropna(subset=["Rate"])
+    if available.empty:
+        st.info("No 28-day return windows have previously active accounts for these filters and dates.")
+        return
+
+    # Leave room around the data and keep a minimum 10-percentage-point range.
+    rates = available.Rate
+    lower = max(0, 5 * floor((100 * rates.min() - 1.5) / 5))
+    upper = min(100, 5 * ceil((100 * rates.max() + 1.5) / 5))
+    if upper - lower < 10:
+        lower = max(0, upper - 10)
+        upper = lower + 10
+
+    latest = available.iloc[-1]
+    delta = None
+    if len(available) > 1:
+        previous = available.iloc[-2]
+        previous_label = previous.Period.strftime("%b %Y" if monthly else "week of %d %b")
+        delta = f"{100 * (latest.Rate - previous.Rate):+.1f} pp vs {previous_label}"
+
+    summary, trend = st.columns((1, 3))
+    with summary:
+        st.metric(f"Window ending {latest['Window ends']:%d %b %Y}", f"{latest.Rate:.1%}",
+                  delta=delta, delta_color="off", border=True)
+        st.caption(f"{latest.Returned:,} of {latest['Previously active']:,} previously active accounts returned.")
+    with trend:
+        period_chart(returned, monthly, "Rate", key="active_return", fmt=".1%",
+                     details=("Returned", "Previously active"), color=COLORS[1],
+                     y_domain=[lower / 100, upper / 100])
+        st.caption(f"Focused y-axis shows {lower}% to {upper}%.")
+    show_table(returned, "active_return")
+
+
 def retention(s, a, _value):
     start, end, monthly = activity_dates(s, "retention")
     activity = dm.activity_trend(s, a, start, end, fixed=False, monthly=monthly)
@@ -365,10 +388,7 @@ def retention(s, a, _value):
 
     st.subheader("28-day active return")
     st.caption("Of the accounts that edited a live asset or published again in the previous 28 days, the share that did either in the next 28 days. Each point uses two adjacent 28-day windows ending on the last day of the displayed week or month.")
-    returned = dm.active_return_trend(s, a, start, end, monthly=monthly)
-    period_chart(returned, monthly, "Rate", key="active_return", fmt=".1%",
-                 details=("Returned", "Previously active"), color=COLORS[1])
-    show_table(returned, "active_return")
+    show_active_return(dm.active_return_trend(s, a, start, end, monthly=monthly), monthly)
 
     st.subheader("Churn over time")
     left, right = st.columns(2)
@@ -380,9 +400,10 @@ def retention(s, a, _value):
         show_table(product, "calendar_product_churn")
     with right:
         st.markdown("**Subscription churn rate**")
-        st.caption("Recorded cancellations in the period, divided by accounts that had already signed up and were still subscribed when it began.")
+        st.caption("Counts cancellations in the week or month of their recorded date, among accounts subscribed at the start of that period.")
+        subscription = subscription.rename(columns={"Count": "Cancellations", "Eligible": "Subscribed at start"})
         period_chart(subscription, monthly, "Rate", key="calendar_subscription_churn", fmt=".1%",
-                     details=("Count", "Eligible"), color=COLORS[1])
+                     details=("Cancellations", "Subscribed at start"), color=COLORS[1])
         show_table(subscription, "calendar_subscription_churn")
 
 
