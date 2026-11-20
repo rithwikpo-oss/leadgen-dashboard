@@ -1,14 +1,14 @@
 # Lead Generation Dashboard
 
-Explore onboarding, account activity, retention, churn, and the validation recovery opportunity in the four case-study CSVs. Viewers can filter by device, agency size, plan, industry, and first builder product. Each chart has a table with its underlying counts. Rate charts show eligible denominators.
+Explore onboarding, account activity, retention, churn, and the validation recovery opportunity in the four case-study CSVs. Each view has its own filters for agency size, device, plan, industry, and first builder product. Onboarding also filters by opening-day template selection. Its Compare by control changes the activation breakdown. The funnel uses the selected signup dates and sidebar filters.
 
 ## Deploy on Streamlit Community Cloud
 
 1. Put the contents of this folder at the root of a **private** GitHub repository. Keep all four exports in the `data/` folder. Include the `.streamlit` folder if you want the supplied theme.
 2. In [Streamlit Community Cloud](https://share.streamlit.io/), choose **Create app**, then select the private repository, its branch, and **`app.py`** as the main file. Streamlit installs the libraries listed in `requirements.txt`.
-3. Once the app opens, confirm its visibility is **Private**. Invite reviewers by email in the app's sharing controls. They can filter the dashboard and download the summary tables.
+3. Once the app opens, confirm its visibility is **Private**. Invite reviewers by email in the app’s sharing controls. They can filter the dashboard and download the summary tables.
 
-The dashboard opens on the bundled May 31, 2026 snapshot. The bundled exports are compressed as `.csv.gz`. To refresh the shared version, replace those files or add the corresponding uncompressed `.csv` files with the same base names. **Filters  Data source  Upload four CSVs** previews another set of exports in the current session.
+The dashboard opens on the bundled May 31, 2026 snapshot. The bundled exports are compressed as `.csv.gz`. To refresh the shared version, replace those files or add the corresponding uncompressed `.csv` files with the same base names. **Filters → Data source → Upload four CSVs** previews another set of exports in the current session.
 
 ## Run locally
 
@@ -24,10 +24,14 @@ python -m streamlit run app.py
 | Metric | Denominator or time anchor |
 | --- | --- |
 | Day-7 activation | Signup cohort with 7 days of follow-up |
-| 28-day repeat publishing | First-publish cohort with 28 days of follow-up |
-| Established-account lead coverage | Accounts already published and subscribed when the trailing 28-day window starts |
-| Weekly activity | Live edits and later distinct publishes. The case-study view holds the initially active comparison panel fixed |
-| 90-day churn | Signup cohort with 90 days of follow-up, active as of signup day 14 |
+| Time to first publish | Days from signup to first successful publish, among publishers |
+| Publish after builder open | Cumulative share of builder entrants with seven days of follow-up, split by opening-day template selection |
+| Lead coverage and repeat publishing | Accounts already published and subscribed when the calendar week or month starts |
+| Leads per 100 recorded visitors | Total leads divided by total recorded visitors across those accounts, multiplied by 100 |
+| Active share | Share of published accounts observed during the period that edited a live asset or published another one |
+| Product churn | Share of at-risk accounts at the start of the period that reach 56 days without qualifying product activity |
+| Subscription churn | Share of period-start accounts that record a cancellation during the period |
+| 90-day churn diagnostic | Signup cohorts with 90 days of follow-up. The first-publish timing breakdown uses accounts still subscribed after day 14 |
 | Validation recovery scenario | Accounts with a first recorded validation error, a complete 7-day window, and no first publish in that window |
 
 `dashboard_metrics.py` reuses the assignment's data cleaning and activity definitions from `leadgen_supporting_analysis.py`. The dashboard uses the accounts export's reporting cutoff. It shows aggregate results and summary downloads.

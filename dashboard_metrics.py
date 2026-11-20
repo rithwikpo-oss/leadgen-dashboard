@@ -21,6 +21,9 @@ DIMENSIONS = {
     "Industry": "industry",
     "First builder product": "builder_product",
 }
+OPENING_TEMPLATE = "Opening-day template selection"
+TEMPLATE_GROUPS = ["Selected a template", "No template selected", "No builder open"]
+ONBOARDING_DIMENSIONS = {**DIMENSIONS, OPENING_TEMPLATE: "opening_template"}
 DEFAULT_EXPORT_NAMES = {stem: f"{stem} - {stem}.csv" for stem in EXPORTS}
 
 
@@ -80,7 +83,9 @@ def snapshot_from_exports(files: dict[str, Path | bytes]) -> Snapshot:
 
     template = builder.loc[builder.event_name.eq("template_selected"), KEY + ["day"]].drop_duplicates()
     same_day = first_open.reset_index().merge(template, on=KEY + ["day"])
-    a["template_selected"] = a.index.isin(same_day[ID])
+    a["opening_template"] = TEMPLATE_GROUPS[2]
+    a.loc[a.open.notna(), "opening_template"] = TEMPLATE_GROUPS[1]
+    a.loc[a.index.isin(same_day[ID]), "opening_template"] = TEMPLATE_GROUPS[0]
     opened = builder.loc[builder.event_name.eq("builder_opened")].groupby(KEY).day.min()
     created = builder.loc[builder.event_name.eq("asset_created")].groupby(KEY).day.min()
     milestones = pd.concat([opened.rename("open"), created.rename("create"), same_product_first], axis=1)
@@ -91,12 +96,9 @@ def snapshot_from_exports(files: dict[str, Path | bytes]) -> Snapshot:
     a["funnel_published"] = a.index.isin(funnel_published.get_level_values(ID))
     a["funnel_lead"] = a.index.isin(funnel_published.intersection(lead_pairs).get_level_values(ID))
 
-    a["repeat_28d"] = a.index.isin(account_ids(more.loc[more.age.between(1, 28)]))
     initial = account_ids(actions.loc[actions.age.between(1, 28)])
     subscribed_through_28 = a.subscription_churn_date.isna() | a.subscription_churn_date.gt(a.launch + 28 * DAY)
     a["initially_active"] = a.index.isin(initial) & a.launch.add(84 * DAY).le(a.end) & subscribed_through_28
-    a["active_weeks_5_8"] = a.index.isin(account_ids(actions.loc[actions.age.between(29, 56)]))
-    a["active_weeks_9_12"] = a.index.isin(account_ids(actions.loc[actions.age.between(57, 84)]))
 
     # Preserve the separate edit-only series used to investigate the April dip.
     keys = more.rename(columns={"published_date": "day"})[KEY + ["day"]].drop_duplicates()
@@ -111,10 +113,10 @@ def snapshot_from_exports(files: dict[str, Path | bytes]) -> Snapshot:
     )
 
 
-def select_accounts(a, filters):
+def select_accounts(a, filters, dimensions=DIMENSIONS):
     for name, choices in filters.items():
         if choices:
-            a = a.loc[a[DIMENSIONS[name]].isin(choices)]
+            a = a.loc[a[dimensions[name]].isin(choices)]
     return a
 
 
@@ -143,6 +145,15 @@ def weekly_activation(a, week_or_month):
     return table.rename(columns={"Group": "Period"})
 
 
+def template_publish_curve(a):
+    eligible = a.loc[a.open.add(7 * DAY).le(a.end)]
+    rows = []
+    for day in range(8):
+        frame = rate_table(eligible, eligible.open_to_publish.between(0, day), "opening_template")
+        rows.append(frame.assign(Day=day))
+    return pd.concat(rows, ignore_index=True)
+
+
 def activation_funnel(a):
     counts = [len(a), int(a.created_asset.sum()), int(a.funnel_published.sum()), int(a.funnel_lead.sum())]
     stages = ["Signed up", "Opened builder and created asset", "First successful publish", "Received a first lead"]
@@ -168,43 +179,69 @@ def _active_ids(snapshot, lo, hi):
     return account_ids(snapshot.activity.loc[snapshot.activity.day.between(lo, hi)])
 
 
+def complete_periods(lo, hi, *, monthly):
+    for period in pd.period_range(lo, hi, freq="M" if monthly else "W-SUN"):
+        start, end = period.start_time.normalize(), period.end_time.normalize()
+        if lo <= start and end <= hi:
+            yield start, end
+
+
 def activity_trend(snapshot, a, lo, hi, *, fixed, monthly):
-    freq = "M" if monthly else "W-SUN"
-    periods = pd.period_range(lo, hi, freq=freq)
-    activity = snapshot.activity.loc[snapshot.activity[ID].isin(a.index) & snapshot.activity.day.between(lo, hi)].copy()
-    activity["period"] = activity.day.dt.to_period(freq)
-    by_period = {p: rows for p, rows in activity.groupby("period")}
-    empty = activity.iloc[:0]
+    activity = snapshot.activity.loc[snapshot.activity[ID].isin(a.index) & snapshot.activity.day.between(lo, hi)]
     rows = []
-    for p in periods:
-        start, end = p.start_time.normalize(), p.end_time.normalize()
-        if start < lo or end > hi:
-            continue
+    for start, end in complete_periods(lo, hi, monthly=monthly):
         cohort = a if fixed else a.loc[a.launch.le(end) & a.last_event.ge(start)]
-        events = by_period.get(p, empty)
-        events = events.loc[events[ID].isin(cohort.index)]
+        events = activity.loc[activity.day.between(start, end) & activity[ID].isin(cohort.index)]
         active = events[ID].nunique()
         edit_only = active - events.loc[events.published_again, ID].nunique()
         rows.append((start, active, len(cohort), rate(active, len(cohort)), edit_only))
     return pd.DataFrame(rows, columns=["Period", "Count", "Eligible", "Rate", "Live edits only"])
 
 
-def calendar_return(snapshot, a, end):
-    previous = _active_ids(snapshot, end - 55 * DAY, end - 28 * DAY).intersection(a.index)
-    current = _active_ids(snapshot, end - 27 * DAY, end).intersection(a.index)
-    return len(previous.intersection(current)), len(previous)
+def established_trend(snapshot, a, lo, hi, *, monthly):
+    leads = snapshot.lead_days.loc[snapshot.lead_days[ID].isin(a.index)]
+    assets = snapshot.additional_assets.loc[snapshot.additional_assets[ID].isin(a.index)]
+    rows = []
+    for start, end in complete_periods(lo, hi, monthly=monthly):
+        eligible = a.index[a.launch.lt(start) & a.last_event.ge(start) & a.end.ge(end)]
+        volume = leads.loc[leads.activity_date.between(start, end) & leads[ID].isin(eligible)]
+        extra = assets.loc[assets.published_date.between(start, end) & assets[ID].isin(eligible)]
+        coverage = volume.groupby(ID).leads.sum().ge(5).sum()
+        rows.append((start, len(eligible), coverage, volume.leads.sum(), volume.visitors.sum(),
+                     extra[ID].nunique(), len(extra)))
+    frame = pd.DataFrame(rows, columns=["Period", "Eligible accounts", "Accounts with 5+ leads", "Leads",
+                                        "Recorded visitors", "Repeat publishers", "Additional assets"])
+    eligible = frame["Eligible accounts"].replace(0, float("nan"))
+    visitors = frame["Recorded visitors"].replace(0, float("nan"))
+    return frame.assign(**{
+        "Received 5+ leads": frame["Accounts with 5+ leads"] / eligible,
+        "Leads per 100 visitors": 100 * frame["Leads"] / visitors,
+        "Published again": frame["Repeat publishers"] / eligible,
+        "Additional assets per account": frame["Additional assets"] / eligible,
+    })
 
 
-def established_28d(snapshot, a, end):
-    start = end - 27 * DAY
-    active_sub = a.subscription_churn_date.isna() | a.subscription_churn_date.ge(start)
-    eligible = a.index[a.launch.lt(start) & active_sub & a.end.ge(end)]
-    lead = snapshot.lead_days.loc[snapshot.lead_days.activity_date.between(start, end)]
-    volume = lead.groupby(ID)[["leads", "visitors"]].sum().reindex(eligible, fill_value=0)
-    extra = snapshot.additional_assets.loc[
-        snapshot.additional_assets[ID].isin(eligible) & snapshot.additional_assets.published_date.between(start, end)
-    ]
-    return volume, extra
+def calendar_churn(snapshot, a, lo, hi, *, monthly):
+    """Count churn events in the period among accounts at risk when it begins."""
+    inactive_days = 56 * DAY
+    activity = snapshot.activity.loc[snapshot.activity[ID].isin(a.index)
+                                     & snapshot.activity.day.between(lo - inactive_days, hi)]
+    product_rows, subscription_rows = [], []
+    for start, end in complete_periods(lo, hi, monthly=monthly):
+        live = a.loc[a.signup_date.lt(start) & a.last_event.ge(start) & a.end.ge(end)]
+        canceled = int(live.subscription_churn_date.between(start, end).sum())
+        subscription_rows.append((start, canceled, len(live), rate(canceled, len(live))))
+
+        recent = activity.loc[activity.day.between(start - inactive_days, start - DAY)]
+        last_action = recent.groupby(ID).day.max()
+        last_action = last_action.loc[last_action.index.isin(live.index)]
+        threshold = last_action + inactive_days
+        first_return = activity.loc[activity.day.between(start, end)].groupby(ID).day.min().reindex(threshold.index)
+        observable = live.last_event.reindex(threshold.index)
+        churned = int((threshold.le(end) & threshold.le(observable) & ~first_return.le(threshold)).sum())
+        product_rows.append((start, churned, len(threshold), rate(churned, len(threshold))))
+    columns = ["Period", "Count", "Eligible", "Rate"]
+    return pd.DataFrame(product_rows, columns=columns), pd.DataFrame(subscription_rows, columns=columns)
 
 
 def quiet_accounts(snapshot, a, end):
@@ -225,32 +262,13 @@ def quiet_accounts(snapshot, a, end):
     })
 
 
-def launch_cohorts(a, full_month_only=True, *, date_window=None):
-    a = a.loc[a.initially_active].copy()
-    if full_month_only:
-        end = a.launch.dt.to_period("M").dt.end_time.dt.normalize()
-        a = a.loc[end.add(84 * DAY).le(a.end)]
-    a["month"] = a.launch.dt.strftime("%Y-%m")
-    rows = []
-    for label, g in by_group(a, "month"):
-        if date_window is not None:
-            month = pd.Period(label, freq="M")
-            lo, hi = date_window
-            if lo > month.start_time.normalize() or hi < month.end_time.normalize():
-                label += " (partial)"
-        for col, window in [("active_weeks_5_8", "Weeks 5-8"), ("active_weeks_9_12", "Weeks 9-12")]:
-            n = int(g[col].sum())
-            rows.append((label, window, n, len(g), rate(n, len(g))))
-    return pd.DataFrame(rows, columns=["First publish month", "Window", "Count", "Eligible", "Rate"])
-
-
 def churn_90d(a, split):
     eligible = a.loc[a.eligible_90d].copy()
     if split == "publish_timing":
         eligible = eligible.loc[eligible.subscribed_day_14].copy()
         eligible["publish_timing"] = "Unpublished by day 14"
-        eligible.loc[eligible.ttp.between(0, 7), "publish_timing"] = "Signup days 0-7"
-        eligible.loc[eligible.ttp.between(8, 14), "publish_timing"] = "Signup days 8-14"
+        eligible.loc[eligible.ttp.between(0, 7), "publish_timing"] = "Signup days 0–7"
+        eligible.loc[eligible.ttp.between(8, 14), "publish_timing"] = "Signup days 8–14"
     return rate_table(eligible, eligible.canceled_90d, split)
 
 
