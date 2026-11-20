@@ -141,28 +141,34 @@ def rate_table(a, numerator, split=None):
     return pd.DataFrame(rows, columns=["Group", "Count", "Eligible", "Rate"])
 
 
+def onboarding_summary(a):
+    """Measure activation, creator drop-off, and speed at fixed signup ages."""
+    day7 = a.signup_date.add(7 * DAY)
+    eligible = a.loc[day7.le(a.end)]
+    activated = int(eligible.ttp.between(0, 7).sum())
+    creators = eligible.loc[eligible.created_date.le(day7.reindex(eligible.index))]
+    unpublished = int((~creators.funnel_publish_date.le(day7.reindex(creators.index))).sum())
+    speed_base = a.loc[a.signup_date.add(PUBLISH_TIME_FOLLOWUP_DAYS * DAY).le(a.end)]
+    published = speed_base.ttp.loc[speed_base.ttp.between(0, PUBLISH_TIME_FOLLOWUP_DAYS)]
+    return {
+        "Activated by day 7": activated,
+        "Signups with 7 days": len(eligible),
+        "Activation rate": rate(activated, len(eligible)),
+        "Unpublished creators": unpublished,
+        "Creators by day 7": len(creators),
+        "Unpublished creator rate": rate(unpublished, len(creators)),
+        "Median days": published.median(),
+        "Publishers in window": len(published),
+        "Signups with follow-up": len(speed_base),
+    }
+
+
 def onboarding_trends(a, *, monthly):
     """Compare signup cohorts at equal account ages."""
+    if a.empty:
+        return pd.DataFrame(columns=["Period", *onboarding_summary(a)])
     period = a.signup_date.dt.to_period("M" if monthly else "W-SUN").dt.start_time
-    rows = []
-    for start, cohort in a.groupby(period):
-        day7 = cohort.signup_date.add(7 * DAY)
-        eligible = cohort.loc[day7.le(cohort.end)]
-        activated = int(eligible.ttp.between(0, 7).sum())
-        creators = eligible.loc[eligible.created_date.le(day7.reindex(eligible.index))]
-        unpublished = int((~creators.funnel_publish_date.le(day7.reindex(creators.index))).sum())
-        speed_base = cohort.loc[cohort.signup_date.add(PUBLISH_TIME_FOLLOWUP_DAYS * DAY).le(cohort.end)]
-        published = speed_base.ttp.loc[speed_base.ttp.between(0, PUBLISH_TIME_FOLLOWUP_DAYS)]
-        rows.append((
-            start, activated, len(eligible), rate(activated, len(eligible)),
-            unpublished, len(creators), rate(unpublished, len(creators)),
-            published.median(), len(published), len(speed_base),
-        ))
-    return pd.DataFrame(rows, columns=[
-        "Period", "Activated by day 7", "Signups with 7 days", "Activation rate",
-        "Unpublished creators", "Creators by day 7", "Unpublished creator rate",
-        "Median days", "Publishers in window", "Signups with follow-up",
-    ])
+    return pd.DataFrame([{"Period": start, **onboarding_summary(cohort)} for start, cohort in a.groupby(period)])
 
 
 def activation_funnel(a):

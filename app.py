@@ -85,16 +85,16 @@ def stat(container, name, value, detail):
         st.caption(detail)
 
 
-def show_table(frame, key, *, visible=False):
+def show_table(frame, key, *, visible=False, pct_columns=()):
     table = frame.copy()
     if "Period" in table:
         table["Period"] = pd.to_datetime(table.Period).dt.strftime("%Y-%m-%d")
     display = table.copy()
-    for column in ("Rate", "From previous stage", "Activation rate", "Unpublished creator rate"):
+    for column in ("Rate", "From previous stage", "Activation rate", "Unpublished creator rate", *pct_columns):
         if column in display:
             display[column] = display[column].map(lambda v: f"{v:.1%}" if pd.notna(v) else "—")
     with (nullcontext() if visible else st.expander("View counts and download table")):
-        st.dataframe(display, hide_index=True, use_container_width=True)
+        st.dataframe(display, hide_index=True, width="stretch")
         st.download_button("Download CSV", table.to_csv(index=False), file_name=f"{key}.csv",
                            mime="text/csv", key=f"download_{key}")
 
@@ -113,7 +113,7 @@ def funnel_markup(frame, value):
             primary, secondary = secondary, primary
         segments.append(
             f'<li><div class="lg-funnel-shape" aria-hidden="true" '
-            f'style="background:{colors[i]};clip-path:{polygon}"></div>'
+            f'style="background:{colors[i % len(colors)]};clip-path:{polygon}"></div>'
             f'<span class="lg-funnel-stage">{escape(row.Stage)}</span>'
             f'<div><span class="lg-funnel-primary">{primary}</span>'
             f'<span class="lg-funnel-secondary">{secondary}</span></div></li>'
@@ -122,49 +122,36 @@ def funnel_markup(frame, value):
 
 
 def show_funnel(frame, value):
+    if frame.empty or not frame.Rate.notna().any():
+        st.info("No signups match these filters and dates.")
+        return
     st.markdown(funnel_markup(frame, value), unsafe_allow_html=True)
-    largest = frame.loc[frame["Drop-off"].idxmax()]
-    if largest["Drop-off"]:
+    dropoffs = frame["Drop-off"].dropna()
+    if not dropoffs.empty and dropoffs.max() > 0:
+        largest = frame.loc[dropoffs.idxmax()]
         st.caption(f"Largest loss by count | {largest['Drop-off']:,} accounts before {largest.Stage.lower()} "
                    f"({1 - largest['From previous stage']:.1%} of the previous stage).")
     show_table(frame, "activation_funnel")
 
 
-def plot(frame, x, value, *, key, group=None, line=False, horizontal=False, select=None):
-    if frame.empty:
-        st.info("No complete periods or eligible accounts match the selected filters.")
+def plot_bars(frame, value, *, key, order=None):
+    if frame.empty or not frame[value].notna().any():
+        st.info("No eligible accounts match the selected filters.")
         return
-    x_type = "T" if x == "Period" else "N"
-    if x_type == "T":
-        frame = frame.assign(Period=pd.to_datetime(frame.Period))
-    tip = [alt.Tooltip(f"{x}:{x_type}", **({"format": "%d %b %Y"} if x_type == "T" else {}))]
-    for c in [group, "Count", "Eligible", "Rate", "Live edits only", "Publishers", value]:
-        if not c or c == x or c not in frame or c in [t.shorthand.split(":")[0] for t in tip]:
-            continue
-        fmt = ".1%" if c == "Rate" else ",.1f" if c.endswith("(days)") else ",.0f"
-        if c == group:
-            tip.append(alt.Tooltip(f"{c}:N"))
-        else:
-            tip.append(alt.Tooltip(f"{c}:Q", format=fmt))
-    value_enc = alt.Axis(format=".0%" if value == "Rate" else ",~s")
-    encoding = {
-        "x": alt.X(f"{value}:Q", axis=value_enc, title=value) if horizontal else
-        alt.X(f"{x}:{x_type}", title=None, sort=select, axis=alt.Axis(labelAngle=0)),
-        "y": alt.Y(f"{x}:{x_type}", title=None, sort=select, axis=alt.Axis(labelLimit=220)) if horizontal else
-        alt.Y(f"{value}:Q", axis=value_enc, title=value),
-        "tooltip": tip,
-    }
-    if group:
-        encoding["color"] = alt.Color(f"{group}:N", title=None, scale=alt.Scale(range=COLORS))
-        if not line and not horizontal:
-            encoding["xOffset"] = alt.XOffset(f"{group}:N")
-    chart = alt.Chart(frame)
-    if line:
-        chart = chart.mark_line(point=alt.OverlayMarkDef(size=55), color=COLORS[0], strokeWidth=2.8)
-    else:
-        chart = chart.mark_bar(color=COLORS[0], cornerRadiusEnd=4)
-    chart = chart.encode(**encoding).properties(height=280).configure_view(stroke=None)
-    st.altair_chart(chart, use_container_width=True, key=key)
+    is_rate = value == "Rate"
+    base = alt.Chart(frame).encode(
+        x=alt.X(f"{value}:Q", axis=alt.Axis(format=".0%" if is_rate else ",~s"),
+                scale=alt.Scale(range=[0, alt.ExprRef(expr="width - 58")])),
+        y=alt.Y("Group:N", title=None, sort=order if order is not None else "-x",
+                axis=alt.Axis(labelLimit=220)),
+        tooltip=["Group:N", alt.Tooltip("Rate:Q", format=".1%"),
+                 alt.Tooltip("Count:Q", format=","), alt.Tooltip("Eligible:Q", format=",")],
+    )
+    bars = base.mark_bar(color=COLORS[0], cornerRadiusEnd=4)
+    labels = base.mark_text(align="left", dx=5, color="#163740").encode(
+        text=alt.Text(f"{value}:Q", format=".1%" if is_rate else ","))
+    chart = (bars + labels).properties(height=max(120, 42 * len(frame))).configure_view(stroke=None)
+    st.altair_chart(chart, width="stretch", key=key)
     show_table(frame, key)
 
 
@@ -209,7 +196,7 @@ def period_chart(frame, monthly, metric, *, key, fmt, details, height=175, color
                  alt.Tooltip(f"{metric}:Q", format=fmt),
                  *[alt.Tooltip(f"{name}:Q", format=",") for name in details if name != metric]],
     ).properties(height=height).configure_view(stroke=None)
-    st.altair_chart(chart, use_container_width=True, key=key)
+    st.altair_chart(chart, width="stretch", key=key)
 
 
 def health(s, a, _value):
@@ -221,6 +208,7 @@ def health(s, a, _value):
         st.info("Select a complete calendar week or month to see these trends.")
         return
     latest = trend.iloc[-1]
+    previous = trend.iloc[-2] if len(trend) > 1 else None
     latest_label = latest.Period.strftime("%B %Y" if monthly else "%d %b %Y")
     st.caption(f"Latest complete {period} shown is {latest_label}. Each point uses accounts that were already live and subscribed when the {period} began.")
     metrics = [
@@ -233,13 +221,16 @@ def health(s, a, _value):
         for column, (name, fmt, count, eligible, color) in zip(st.columns(2), row):
             with column.container(border=True):
                 amount = format(latest[name], fmt) if pd.notna(latest[name]) else "-"
-                st.metric(name, amount)
+                delta = None
+                if previous is not None and pd.notna(latest[name]) and pd.notna(previous[name]):
+                    change = latest[name] - previous[name]
+                    difference = f"{100 * change:+.1f} pp" if fmt.endswith("%") else format(change, f"+{fmt}")
+                    previous_label = previous.Period.strftime("%b %Y" if monthly else "week of %d %b")
+                    delta = f"{difference} vs {previous_label}"
+                st.metric(name, amount, delta=delta, delta_color="off")
                 period_chart(trend, monthly, name, key=f"health_{count}", fmt=fmt,
                              details=(count, eligible), height=132, color=color)
-    display = trend.copy()
-    for name in ("Received 5+ leads", "Published again"):
-        display[name] = display[name].map(lambda value: f"{value:.1%}" if pd.notna(value) else "-")
-    show_table(display, "product_health_trends")
+    show_table(trend, "product_health_trends", pct_columns=("Received 5+ leads", "Published again"))
 
 
 def publish_percentiles(a, split_name):
@@ -317,14 +308,16 @@ def onboarding(s, a, value):
         st.info("No accounts match the selected signup dates and filters.")
         return
     eligible = a.loc[a.signup_date.add(7 * dm.DAY).le(a.end)]
-    activated = int(eligible.ttp.between(0, 7).sum())
-    median = a.ttp.median()
-    unpublished = int((a.created_asset & ~a.funnel_published).sum())
+    summary = dm.onboarding_summary(a)
+    activated = summary["Activated by day 7"]
+    median = summary["Median days"]
+    unpublished = summary["Unpublished creators"]
+    creators = summary["Creators by day 7"]
     c = st.columns(3)
     stat(c[0], "7-day activation", pct(activated, len(eligible)), f"{activated:,} of {len(eligible):,} signups with 7 days of follow-up")
     stat(c[1], "Median time to publish", f"{median:g} days" if pd.notna(median) else "-",
-         f"{a.ttp.notna().sum():,} accounts with a first publish")
-    stat(c[2], "Asset creators who did not publish", f"{unpublished:,}", f"{pct(unpublished, int(a.created_asset.sum()))} of creators")
+         f"{summary['Publishers in window']:,} accounts published by signup day {dm.PUBLISH_TIME_FOLLOWUP_DAYS}")
+    stat(c[2], "Creators unpublished on day 7", f"{unpublished:,}", f"{pct(unpublished, creators)} of {creators:,} day-7 creators")
 
     st.subheader("Onboarding funnel")
     st.caption("Share of selected signups reaching each stage by the data cutoff.")
@@ -334,13 +327,23 @@ def onboarding(s, a, value):
                               help="Groups both the 7-day activation and time-to-first-publish charts.")
     st.subheader("7-day activation breakdown")
     table = dm.rate_table(eligible, eligible.ttp.between(0, 7), dm.ONBOARDING_DIMENSIONS[split_name])
-    plot(table, "Group", value, horizontal=True, key="activation_by_group",
-         select=dm.TEMPLATE_GROUPS if split_name == dm.OPENING_TEMPLATE else None)
+    plot_bars(table, value, key="activation_by_group",
+              order=dm.TEMPLATE_GROUPS if split_name == dm.OPENING_TEMPLATE else None)
 
     st.subheader("Time to first publish")
     st.caption("Days from signup to first successful publish, among accounts that published. Use 7-day activation above to see how many got live.")
     publish_percentiles(a, split_name)
     show_onboarding_trends(a, value)
+
+
+def focused_rate_bounds(rates):
+    # Leave room around the data and keep a minimum 10-percentage-point range.
+    lower = max(0, 5 * floor((100 * rates.min() - 1.5) / 5))
+    upper = min(100, 5 * ceil((100 * rates.max() + 1.5) / 5))
+    if upper - lower < 10:
+        lower = max(0, upper - 10)
+        upper = lower + 10
+    return lower, upper
 
 
 def show_active_return(returned, monthly):
@@ -349,14 +352,7 @@ def show_active_return(returned, monthly):
         st.info("No 28-day return windows have previously active accounts for these filters and dates.")
         return
 
-    # Leave room around the data and keep a minimum 10-percentage-point range.
-    rates = available.Rate
-    lower = max(0, 5 * floor((100 * rates.min() - 1.5) / 5))
-    upper = min(100, 5 * ceil((100 * rates.max() + 1.5) / 5))
-    if upper - lower < 10:
-        lower = max(0, upper - 10)
-        upper = lower + 10
-
+    lower, upper = focused_rate_bounds(available.Rate)
     latest = available.iloc[-1]
     delta = None
     if len(available) > 1:
@@ -388,12 +384,13 @@ def retention(s, a, _value):
 
     st.subheader("28-day active return")
     st.caption("Of the accounts that edited a live asset or published again in the previous 28 days, the share that did either in the next 28 days. Each point uses two adjacent 28-day windows ending on the last day of the displayed week or month.")
-    show_active_return(dm.active_return_trend(s, a, start, end, monthly=monthly), monthly)
+    returned = dm.active_return_trend(s, a, start, end, monthly=monthly)
+    show_active_return(returned, monthly)
 
     st.subheader("Churn over time")
     left, right = st.columns(2)
     with left:
-        st.markdown("**Product churn rate**")
+        st.markdown("**56-day builder inactivity**")
         st.caption("Previously active accounts that reached 56 days without a live edit or repeat publish, as a share of those at risk when the period began. A return restarts the inactivity clock.")
         period_chart(product, monthly, "Rate", key="calendar_product_churn", fmt=".1%",
                      details=("Count", "Eligible"), color=COLORS[2])
@@ -405,6 +402,18 @@ def retention(s, a, _value):
         period_chart(subscription, monthly, "Rate", key="calendar_subscription_churn", fmt=".1%",
                      details=("Cancellations", "Subscribed at start"), color=COLORS[1])
         show_table(subscription, "calendar_subscription_churn")
+
+    if not returned.empty:
+        quiet_end = returned["Window ends"].iloc[-1]
+        quiet = dm.quiet_accounts(s, a, quiet_end)
+        with_leads = quiet.loc[quiet.Group.eq("5+ leads")].iloc[0]
+        if with_leads.Eligible:
+            st.info(
+                f"**{with_leads.Rate:.1%} of quiet, still-subscribed accounts received 5+ leads** "
+                f"({with_leads.Count:,} of {with_leads.Eligible:,}) in the 28 days ending {quiet_end:%d %b %Y}. "
+                "These accounts were active in the prior 28 days, then recorded no live edits or repeat publishes. "
+                "See Case-study diagnostics for the traffic and lead breakdown."
+            )
 
 
 def churn_by_segment(s, a, value):
@@ -425,17 +434,64 @@ def churn_by_segment(s, a, value):
         st.caption("Publishing groups use accounts still subscribed after signup day 14. The chart counts cancellations in those groups through day 90.")
     else:
         st.caption("The chart counts all cancellations by signup day 90 among signups with 90 days of follow-up.")
-    plot(dm.churn_90d(cohort, split), "Group", value, horizontal=True, key="churn_by_segment", select=order)
+    plot_bars(dm.churn_90d(cohort, split), value, key="churn_by_segment", order=order)
+
+
+def april_activity_check(s, a, value, earliest):
+    first = max(earliest, pd.Timestamp("2026-03-30"))
+    last = min(s.cutoff, pd.Timestamp("2026-05-03"))
+    panel = a.loc[a.index.isin(s.fixed_panel)]
+    fixed = dm.activity_trend(s, panel, first, last, fixed=True, monthly=False)
+    overall = dm.activity_trend(s, a, first, last, fixed=False, monthly=False)
+    frame = pd.concat(
+        [overall.assign(Population="Overall"), fixed.assign(Population="Fixed cohort")], ignore_index=True,
+    )
+    data = frame.loc[frame.Eligible.gt(0)].copy()
+    if data.empty:
+        st.info("No eligible accounts and complete weeks match these filters.")
+        return
+    st.caption("Overall includes published accounts observed in each week. The fixed cohort follows the same initially active accounts throughout. The dashed marker shows the week of April 6.")
+    data["Week"] = data.Period.dt.strftime("%b %d")
+    weeks = data.sort_values("Period").Week.unique().tolist()
+    focused = value == "Rate" and st.toggle("Focus activity rate axis", value=True, key="april_focus")
+    scale = alt.Scale(zero=True)
+    if focused:
+        lower, upper = focused_rate_bounds(data.Rate)
+        scale = alt.Scale(domain=[lower / 100, upper / 100], nice=False, zero=False)
+
+    x = alt.X("Week:O", sort=weeks, title="Week starting", axis=alt.Axis(labelAngle=0))
+    curves = alt.Chart(data).mark_line(point=True, strokeWidth=2.3).encode(
+        x=x, y=alt.Y(f"{value}:Q", title="Active share" if value == "Rate" else "Active accounts",
+                     axis=alt.Axis(format=".0%" if value == "Rate" else ","), scale=scale),
+        color=alt.Color("Population:N", title=None,
+                        scale=alt.Scale(domain=["Overall", "Fixed cohort"], range=COLORS[:2]),
+                        legend=alt.Legend(orient="top")),
+        tooltip=["Week:O", "Population:N", alt.Tooltip("Rate:Q", format=".1%"),
+                 alt.Tooltip("Count:Q", format=",", title="Active accounts"),
+                 alt.Tooltip("Eligible:Q", format=","), alt.Tooltip("Live edits only:Q", format=",")],
+    )
+    marker = alt.Chart(data.loc[data.Week.eq("Apr 06"), ["Week"]].drop_duplicates()).mark_rule(
+        color="#83949b", strokeDash=[4, 4],
+    ).encode(x=x)
+    st.altair_chart((marker + curves).properties(height=225).configure_view(stroke=None),
+                    width="stretch", key="april_activity_check")
+    if focused:
+        st.caption(f"Focused y-axis shows {lower}% to {upper}%.")
+    show_table(frame, "april_activity_check")
 
 
 def diagnostics(s, a, value):
     st.subheader("Quiet accounts by traffic and leads")
     earliest = s.accounts.signup_date.min()
-    quiet_end = st.date_input("Quiet window ends", value=s.cutoff.date(), min_value=earliest.date(),
-                              max_value=s.cutoff.date(), key="quiet_end")
-    quiet = dm.quiet_accounts(s, a, pd.Timestamp(quiet_end))
-    st.caption(f"{quiet.Count.sum():,} accounts were active in the previous 28 days, went quiet in the selected 28 days, and were still subscribed.")
-    plot(quiet, "Group", value, horizontal=True, key="quiet_account_breakdown", select=quiet.Group.tolist())
+    earliest_quiet_end = earliest + 56 * dm.DAY
+    if earliest_quiet_end <= s.cutoff:
+        quiet_end = st.date_input("Quiet window ends", value=s.cutoff.date(), min_value=earliest_quiet_end.date(),
+                                  max_value=s.cutoff.date(), key="quiet_end")
+        quiet = dm.quiet_accounts(s, a, pd.Timestamp(quiet_end))
+        st.caption(f"{quiet.Count.sum():,} accounts were active in the previous 28 days, went quiet in the selected 28 days, and were still subscribed.")
+        plot_bars(quiet, value, key="quiet_account_breakdown", order=quiet.Group.tolist())
+    else:
+        st.info("The data needs two 28-day windows after the first possible publish to measure quiet accounts.")
 
     st.subheader("Validation recovery scenario")
     default_start = max(earliest, min(pd.Timestamp("2026-02-01"), s.cutoff))
@@ -457,12 +513,7 @@ def diagnostics(s, a, value):
         churn_by_segment(s, a, value)
     if earliest <= pd.Timestamp("2026-04-06") <= s.cutoff:
         with st.expander("April activity check"):
-            panel = a.loc[a.index.isin(s.fixed_panel)]
-            first = max(earliest, pd.Timestamp("2026-03-30"))
-            last = min(s.cutoff, pd.Timestamp("2026-05-03"))
-            frame = dm.activity_trend(s, panel, first, last, fixed=True, monthly=False)
-            st.caption("The same initially active accounts are followed across each complete week.")
-            plot(frame, "Period", value, key="april_activity_check", line=True)
+            april_activity_check(s, a, value, earliest)
 
 
 def tab_filters(accounts, page):
@@ -486,7 +537,7 @@ def tab_filters(accounts, page):
                              index=modes.index(st.session_state.get(mode_key, "Rate")),
                              key=f"mode_{page}")
             st.session_state[mode_key] = value
-    return dm.select_accounts(accounts, filters, dimensions), value
+    return dm.select_accounts(accounts, filters, dimensions), value, filters
 
 
 def main():
@@ -519,8 +570,11 @@ def main():
     pages = {"Product health": health, "Onboarding": onboarding,
              "Retention & churn": retention, "Case-study diagnostics": diagnostics}
     current = st.radio("Dashboard view", list(pages), horizontal=True, label_visibility="collapsed")
-    a, value = tab_filters(s.accounts, current)
-    st.caption(f"{len(a):,} of {len(s.accounts):,} sub-accounts selected")
+    a, value, filters = tab_filters(s.accounts, current)
+    selection = f"{len(a):,} of {len(s.accounts):,} sub-accounts selected"
+    filter_summary = [f"{label} = {', '.join(str(choice) for choice in choices)}"
+                      for label, choices in filters.items() if choices]
+    st.caption(" | ".join([selection, *filter_summary]))
     if a.empty:
         st.info("No accounts match these filters.")
         st.stop()

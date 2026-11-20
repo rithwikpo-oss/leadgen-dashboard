@@ -25,13 +25,14 @@ python -m streamlit run app.py
 | --- | --- |
 | Day-7 activation | Signup cohort with 7 days of follow-up |
 | Time to first publish | Days from signup to first successful publish, among publishers |
-| Median publish time by signup cohort | Days to first publish among accounts that published within 14 days and have 14 days of follow-up |
+| Median publish time headline and cohort trend | Days to first publish among accounts that published within 14 days and have 14 days of follow-up |
 | Creators still unpublished by signup day 7 | Share of accounts that created an asset by signup day 7 and had no matched successful publish by then, among creators with 7 days of follow-up |
 | Lead coverage and repeat publishing | Accounts already published and subscribed when the calendar week or month starts |
 | Leads per 100 recorded visitors | Total leads divided by total recorded visitors across those accounts, multiplied by 100 |
 | Active share | Share of published accounts observed during the period that edited a live asset or published another one |
 | 28-day active return | Share of previously active accounts that take a qualifying action again in the next 28 days. Two adjacent 28-day windows end on the last day of the displayed calendar period |
-| Product churn | Share of at-risk accounts at the start of the period that reach 56 days without qualifying product activity |
+| 56-day builder inactivity | Share of at-risk accounts at the start of the period that reach 56 days without qualifying product activity |
+| Quiet accounts with 5+ leads | Share of still-subscribed accounts that had qualifying activity in the first of two 28-day windows, had no qualifying activity in the second, and received 5+ leads in the second |
 | Subscription churn | Share of period-start accounts that record a cancellation during the period |
 | 90-day churn diagnostic | Signup cohorts with 90 days of follow-up. The first-publish timing breakdown uses accounts still subscribed after day 14 |
 | Validation recovery scenario | Accounts with a first recorded validation error, a complete 7-day window, and no first publish in that window |
