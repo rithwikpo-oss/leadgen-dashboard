@@ -366,7 +366,7 @@ def show_active_return(returned, monthly):
 
     summary, trend = st.columns((1, 3))
     with summary:
-        st.metric(f"Window ending {latest['Window ends']:%d %b %Y}", f"{latest.Rate:.1%}",
+        st.metric(f"Ending {latest['Window ends']:%d %b %Y}", f"{latest.Rate:.1%}",
                   delta=delta, delta_color="off", border=True)
         st.caption(f"{latest.Returned:,} of {latest['Previously active']:,} previously active accounts returned.")
     with trend:
