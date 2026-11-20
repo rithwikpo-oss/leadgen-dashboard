@@ -1,6 +1,8 @@
 """Streamlit entrypoint. Run with streamlit run app.py."""
 
+from contextlib import nullcontext
 from hashlib import sha256
+from html import escape
 from pathlib import Path
 
 import altair as alt
@@ -42,6 +44,12 @@ def layout():
         [data-testid=stMetric] {background: #f3f8f7; border-radius: .70rem; border-color: #dcebe7;}
         [data-testid=stMetricLabel] {font-weight: 550;}
         [data-testid=stSidebar] {border-right: 1px solid #e2ebe8;}
+        .lg-funnel {list-style: none; padding: 0 !important; margin: .75rem 0 1rem !important; display: grid; gap: 4px;}
+        .lg-funnel li {position: relative; isolation: isolate; min-height: 66px; margin: 0; padding: .4rem .5rem; display: grid; align-content: center; text-align: center; color: #123331;}
+        .lg-funnel-shape {position: absolute; inset: 0; z-index: -1;}
+        .lg-funnel-stage {font-size: .83rem; font-weight: 660; line-height: 1.22;}
+        .lg-funnel-primary {font-size: 1.34rem; font-weight: 720; font-variant-numeric: tabular-nums;}
+        .lg-funnel-secondary {font-size: .79rem; color: #315859; margin-left: .4rem; font-variant-numeric: tabular-nums;}
         </style>""",
         unsafe_allow_html=True,
     )
@@ -66,16 +74,49 @@ def stat(container, name, value, detail):
         st.caption(detail)
 
 
-def show_table(frame, key):
+def show_table(frame, key, *, visible=False):
     table = frame.copy()
     if "Period" in table:
         table["Period"] = pd.to_datetime(table.Period).dt.strftime("%Y-%m-%d")
-    if "Rate" in table:
-        table["Rate"] = table.Rate.map(lambda v: f"{v:.1%}" if pd.notna(v) else "-")
-    with st.expander("View counts and download table"):
-        st.dataframe(table, hide_index=True, use_container_width=True)
+    display = table.copy()
+    for column in ("Rate", "From previous stage"):
+        if column in display:
+            display[column] = display[column].map(lambda v: f"{v:.1%}" if pd.notna(v) else "-")
+    with (nullcontext() if visible else st.expander("View counts and download table")):
+        st.dataframe(display, hide_index=True, use_container_width=True)
         st.download_button("Download CSV", table.to_csv(index=False), file_name=f"{key}.csv",
                            mime="text/csv", key=f"download_{key}")
+
+
+def funnel_markup(frame, value):
+    """Draw step widths proportional to their share of the signup cohort."""
+    colors = ["#9CD6CA", "#ADE0D5", "#C2E8E0", "#D8EFEA"]
+    widths = frame.Rate.tolist()
+    segments = []
+    for i, row in enumerate(frame.itertuples(index=False)):
+        top = 50 * (1 - widths[i])
+        bottom = 50 * (1 - widths[min(i + 1, len(widths) - 1)])
+        polygon = f"polygon({top:.3f}% 0,{100-top:.3f}% 0,{100-bottom:.3f}% 100%,{bottom:.3f}% 100%)"
+        primary, secondary = f"{row.Rate:.1%}", f"{row.Count:,}"
+        if value == "Count":
+            primary, secondary = secondary, primary
+        segments.append(
+            f'<li><div class="lg-funnel-shape" aria-hidden="true" '
+            f'style="background:{colors[i]};clip-path:{polygon}"></div>'
+            f'<span class="lg-funnel-stage">{escape(row.Stage)}</span>'
+            f'<div><span class="lg-funnel-primary">{primary}</span>'
+            f'<span class="lg-funnel-secondary">{secondary}</span></div></li>'
+        )
+    return '<ol class="lg-funnel" aria-label="Onboarding funnel">' + "".join(segments) + "</ol>"
+
+
+def show_funnel(frame, value):
+    st.markdown(funnel_markup(frame, value), unsafe_allow_html=True)
+    largest = frame.loc[frame["Drop-off"].idxmax()]
+    if largest["Drop-off"]:
+        st.caption(f"Largest loss by count � {largest['Drop-off']:,} accounts before {largest.Stage.lower()} "
+                   f"({1 - largest['From previous stage']:.1%} of the previous stage).")
+    show_table(frame, "activation_funnel")
 
 
 def plot(frame, x, value, *, key, group=None, line=False, horizontal=False, select=None):
@@ -98,7 +139,7 @@ def plot(frame, x, value, *, key, group=None, line=False, horizontal=False, sele
     encoding = {
         "x": alt.X(f"{value}:Q", axis=value_enc, title=value) if horizontal else
         alt.X(f"{x}:{x_type}", title=None, sort=select, axis=alt.Axis(labelAngle=0)),
-        "y": alt.Y(f"{x}:{x_type}", title=None, sort=select) if horizontal else
+        "y": alt.Y(f"{x}:{x_type}", title=None, sort=select, axis=alt.Axis(labelLimit=220)) if horizontal else
         alt.Y(f"{value}:Q", axis=value_enc, title=value),
         "tooltip": tip,
     }
@@ -126,25 +167,41 @@ def health(s, a, value):
     with controls[1]:
         cadence = st.radio("Group by", ["Week", "Month"], horizontal=True, key="health_cadence")
     with controls[2]:
-        base = st.radio("Activity cohort", ["Case-study panel", "All published accounts"],
+        base = st.radio("Activity cohort", ["All published accounts", "April case-study panel"],
                         horizontal=True, key="activity_cohort")
-    fixed = base == "Case-study panel"
+    fixed = base == "April case-study panel"
     panel = a.loc[a.index.isin(s.fixed_panel)] if fixed else a
     volume, extras = dm.established_28d(s, a, end)
     repeat = extras[dm.ID].nunique()
     n, d = dm.calendar_return(s, panel, end)
-    st.subheader("Established accounts")
-    st.caption(f"28 days ending {end:%d %b %Y}. Established accounts had already published before the window and were subscribed at its start.")
+    window_start = end - 27 * dm.DAY
+    st.subheader("Lead generation and repeat publishing")
+    st.caption(f"{window_start:%d %b}-{end:%d %b %Y} � Accounts published before this 28-day window and subscribed at its start.")
     c = st.columns(4)
     leads = int(volume.leads.ge(5).sum())
     stat(c[0], "Received 5+ leads", pct(leads, len(volume)), f"{leads:,} of {len(volume):,} eligible accounts")
-    stat(c[1], "Published again", pct(repeat, len(volume)), f"{repeat:,} of {len(volume):,} eligible accounts")
-    stat(c[2], "Additional assets per account", f"{len(extras) / len(volume):.2f}" if len(volume) else "-",
+    visitors, captured = int(volume.visitors.sum()), int(volume.leads.sum())
+    stat(c[1], "Leads per 100 visitors", f"{100 * captured / visitors:.1f}" if visitors else "-",
+         f"{captured:,} leads from {visitors:,} recorded visitors")
+    stat(c[2], "Published again", pct(repeat, len(volume)), f"{repeat:,} of {len(volume):,} eligible accounts")
+    stat(c[3], "Additional assets per account", f"{len(extras) / len(volume):.2f}" if len(volume) else "-",
          f"{len(extras):,} assets across {len(volume):,} eligible accounts")
-    stat(c[3], "28-day active-account return", pct(n, d), f"{n:,} of {d:,} active in the prior 28 days")
-    st.subheader("Active sub-accounts")
-    st.caption("Activity is a live edit or a later distinct publish. The case-study panel follows the same initially active accounts across the selected calendar periods.")
-    frame = dm.activity_trend(s, panel, start, end, fixed=fixed, monthly=cadence == "Month")
+    st.subheader("Activity and return")
+    monthly = cadence == "Month"
+    frame = dm.activity_trend(s, panel, start, end, fixed=fixed, monthly=monthly)
+    active, returned = st.columns(2)
+    if frame.empty:
+        stat(active, "Active accounts in the latest period", "-", "Select a complete week or month to see activity.")
+    else:
+        latest = frame.iloc[-1]
+        period = latest.Period.to_period("M" if monthly else "W-SUN")
+        stat(active, f"Active accounts in latest {cadence.lower()}", f"{latest.Count:,}",
+             f"{period.start_time:%d %b}-{period.end_time:%d %b %Y} � {pct(latest.Count, latest.Eligible)} of {latest.Eligible:,} in scope")
+    stat(returned, "28-day active-account return", pct(n, d),
+         f"{n:,} of {d:,} active in the preceding 28 days � {window_start:%d %b}-{end:%d %b %Y}")
+    detail = ("The April panel follows the same initially active accounts across periods." if fixed else
+              "The activity rate uses published accounts with observation time during each displayed period.")
+    st.caption(f"Activity means a live edit or a later distinct publish. {detail}")
     plot(frame, "Period", value, key="activity_over_time", line=True)
 
 
@@ -169,13 +226,33 @@ def onboarding(s, a, value):
     a1, a2 = st.columns(2)
     with a1:
         st.subheader("Onboarding funnel")
-        st.caption("Each stage uses the selected signup base and outcomes recorded through the data cutoff.")
-        funnel = dm.activation_funnel(a)
-        plot(funnel, "Stage", value, horizontal=True, key="activation_funnel", select=funnel.Stage.tolist())
+        st.caption("Share of selected signups reaching each stage by the data cutoff.")
+        show_funnel(dm.activation_funnel(a), value)
     with a2:
         st.subheader(f"7-day activation by {split_name.lower()}")
         table = dm.rate_table(eligible, eligible.ttp.between(0, 7), dm.DIMENSIONS[split_name])
         plot(table, "Group", value, horizontal=True, key="activation_by_group")
+    st.subheader("Time to first publish")
+    st.caption("Days from signup to the first successful publish, among accounts that published.")
+    ttp_split = st.radio("Break down publish time by", [split_name, "First asset template use"],
+                         horizontal=True)
+    if ttp_split == "First asset template use":
+        publishers = a.loc[a.launch.notna()].assign(
+            template=a.used_template.map({1: "Used template", 0: "Started from scratch"})
+        )
+        column = "template"
+    else:
+        publishers = a.loc[a.launch.notna()]
+        column = dm.DIMENSIONS[split_name]
+    ttp = dm.time_to_publish(publishers, column).round(1)
+    if ttp.empty:
+        st.info("No accounts in this selection have a successful publish.")
+    else:
+        st.caption("P90 is the time by which 90% of publishers had published.")
+        show_table(ttp[["Group", "Publishers", "Median (days)", "P90 (days)",
+                        "P25 (days)", "P75 (days)", "Mean (days)"]], "time_to_first_publish",
+                   visible=True)
+
     st.subheader("Opening-day template selection")
     opened = a.loc[a.open.add(7 * dm.DAY).le(a.end)].copy()
     opened["template_group"] = opened.template_selected.map({
@@ -185,18 +262,10 @@ def onboarding(s, a, value):
     st.caption("First publish within seven days of first builder open. Groups reflect recorded behavior.")
     plot(table, "Group", value, horizontal=True, key="activation_by_template")
     st.subheader("Activation by signup cohort")
+    st.caption("Each cohort includes signups with seven days of follow-up. Date selections can cut across a week or month.")
     monthly = st.radio("Cohort size", ["Week", "Month"], horizontal=True, key="activation_cohort_size")
     plot(dm.weekly_activation(a, "M" if monthly == "Month" else "W-SUN"), "Period", value,
          key="activation_cohorts", line=True)
-    st.subheader("Time to first publish")
-    ttp_split = st.radio("Publisher comparison", ["Selected dimension", "First asset template use"],
-                         horizontal=True)
-    if ttp_split == "First asset template use":
-        a = a.loc[a.launch.notna()].assign(template=a.used_template.map({1: "Used template", 0: "Started from scratch"}))
-        column = "template"
-    else:
-        column = dm.DIMENSIONS[split_name]
-    show_table(dm.time_to_publish(a, column).round(2), "time_to_first_publish")
 
 
 def retention(s, a, value):
@@ -210,14 +279,14 @@ def retention(s, a, value):
     if anchor == "First publish":
         eligible = cohort.loc[cohort.launch.add(28 * dm.DAY).le(cohort.end)]
         n = int(eligible.repeat_28d.sum())
-        panel = dm.launch_cohorts(cohort)
+        panel = dm.launch_cohorts(cohort, date_window=(start, end))
         done = panel.loc[panel.Window.eq("Weeks 9-12")]
         c = st.columns(2)
         stat(c[0], "New 28-day repeat publishing", pct(n, len(eligible)), f"{n:,} of {len(eligible):,} first publishers")
         stat(c[1], "Active in weeks 9-12", pct(done.Count.sum(), done.Eligible.sum()),
-             f"{done.Count.sum():,} of {done.Eligible.sum():,} initially active accounts in complete monthly cohorts")
+             f"{done.Count.sum():,} of {done.Eligible.sum():,} initially active accounts with full follow-up")
         st.subheader("Product activity after first publish")
-        st.caption("Initially active accounts were subscribed on day 28 and had activity during the first four weeks. Each displayed cohort has full follow-up through week 12.")
+        st.caption("Initially active accounts were subscribed on day 28 and had activity in the first four weeks. Cohorts have full follow-up through week 12. A partial month reflects a date filter.")
         plot(panel, "First publish month", value, group="Window", key="launch_retention")
         dimension = st.selectbox("Repeat publishing breakdown", list(dm.DIMENSIONS), key="repeat_dimension")
         plot(dm.rate_table(eligible, eligible.repeat_28d, dm.DIMENSIONS[dimension]), "Group", value,
@@ -234,7 +303,10 @@ def retention(s, a, value):
         dimension = st.selectbox("Compare by", ["First-publish timing", *dm.DIMENSIONS], key="churn_split")
         split = "publish_timing" if dimension == "First-publish timing" else dm.DIMENSIONS[dimension]
         order = ["Signup days 0-7", "Signup days 8-14", "Unpublished by day 14"] if split == "publish_timing" else None
-        st.caption("Timing groups are set using signup day 14. Churn measures cancellations by signup day 90 among cohorts that completed the window.")
+        if split == "publish_timing":
+            st.caption("Publishing groups use accounts still subscribed after signup day 14. The chart counts cancellations in those groups through day 90.")
+        else:
+            st.caption("The chart counts all cancellations by signup day 90 among signups with 90 days of follow-up.")
         plot(dm.churn_90d(cohort, split), "Group", value, horizontal=True, key="churn_by_segment", select=order)
 
 
@@ -253,13 +325,14 @@ def diagnostics(s, a, value):
     start, end = date_window("First validation error dates", earliest, s.cutoff, key="validation_dates",
                              default=(default_start.date(), default_end.date()))
     eligible, completed = dm.validation_opportunity(a, start, end)
-    assumed = st.slider("Assumed share of unresolved cases recovered", 0, 100, 25, step=5, format="%d%%")
     unresolved = eligible - completed
     c = st.columns(3)
     stat(c[0], "Accounts flagged", f"{eligible:,}", "All logged rules with 7 days of follow-up")
-    stat(c[1], "First publish within 7 days", f"{completed:,}", f"{unresolved:,} remained unpublished")
-    stat(c[2], "Modeled additional first publishers", f"{unresolved * assumed / 100:,.0f}",
-         f"Scenario at {assumed}% recovery. All-rule ceiling is {unresolved:,}.")
+    stat(c[1], "First publish within 7 days", f"{completed:,}", f"{pct(completed, eligible)} of flagged accounts")
+    stat(c[2], "Still unpublished at day 7", f"{unresolved:,}", f"{pct(unresolved, eligible)} of flagged accounts")
+    if st.checkbox("Explore a recovery scenario"):
+        assumed = st.slider("Assumed share of unresolved cases recovered", 0, 100, 25, step=5, format="%d%%")
+        st.metric("Modeled additional first publishers", f"{unresolved * assumed / 100:,.0f}")
     st.caption("A single-rule pilot needs rule, draft, and attempt IDs plus observed incremental first-publish lift.")
 
 
