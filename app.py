@@ -140,17 +140,18 @@ def plot_bars(frame, value, *, key, order=None):
         return
     is_rate = value == "Rate"
     base = alt.Chart(frame).encode(
-        x=alt.X(f"{value}:Q", axis=alt.Axis(format=".0%" if is_rate else ",~s"),
+        x=alt.X(f"{value}:Q",
+                axis=alt.Axis(format=".0%" if is_rate else ",~s", tickCount=6),
                 scale=alt.Scale(range=[0, alt.ExprRef(expr="width - 58")])),
         y=alt.Y("Group:N", title=None, sort=order if order is not None else "-x",
-                axis=alt.Axis(labelLimit=220)),
+                axis=alt.Axis(labelLimit=220, labelOverlap=False, labelPadding=8)),
         tooltip=["Group:N", alt.Tooltip("Rate:Q", format=".1%"),
                  alt.Tooltip("Count:Q", format=","), alt.Tooltip("Eligible:Q", format=",")],
     )
     bars = base.mark_bar(color=COLORS[0], cornerRadiusEnd=4)
     labels = base.mark_text(align="left", dx=5, color="#163740").encode(
         text=alt.Text(f"{value}:Q", format=".1%" if is_rate else ","))
-    chart = (bars + labels).properties(height=max(120, 42 * len(frame))).configure_view(stroke=None)
+    chart = (bars + labels).properties(height=max(185, 36 * len(frame) + 64)).configure_view(stroke=None)
     st.altair_chart(chart, width="stretch", key=key)
     show_table(frame, key)
 
