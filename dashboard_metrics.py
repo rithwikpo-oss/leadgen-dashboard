@@ -24,6 +24,7 @@ DIMENSIONS = {
 OPENING_TEMPLATE = "Opening-day template selection"
 TEMPLATE_GROUPS = ["Selected a template", "No template selected", "No builder open"]
 ONBOARDING_DIMENSIONS = {**DIMENSIONS, OPENING_TEMPLATE: "opening_template"}
+PUBLISH_TIME_FOLLOWUP_DAYS = 14
 DEFAULT_EXPORT_NAMES = {stem: f"{stem} - {stem}.csv" for stem in EXPORTS}
 
 
@@ -77,9 +78,8 @@ def snapshot_from_exports(files: dict[str, Path | bytes]) -> Snapshot:
     a["builder_product"] = a.builder_product.fillna("No builder recorded")
     a["first_error"] = first_failure.day
     same_product_first = first.set_index(KEY).launch
-    for frame, label in [(first_open, "open_to_publish"), (first_failure, "error_to_publish")]:
-        launch = same_product_first.reindex(frame.set_index("product_type", append=True).index)
-        a[label] = (launch.set_axis(frame.index) - frame.day).dt.days
+    launch_after_error = same_product_first.reindex(first_failure.set_index("product_type", append=True).index)
+    a["error_to_publish"] = (launch_after_error.set_axis(first_failure.index) - first_failure.day).dt.days
 
     template = builder.loc[builder.event_name.eq("template_selected"), KEY + ["day"]].drop_duplicates()
     same_day = first_open.reset_index().merge(template, on=KEY + ["day"])
@@ -90,10 +90,13 @@ def snapshot_from_exports(files: dict[str, Path | bytes]) -> Snapshot:
     created = builder.loc[builder.event_name.eq("asset_created")].groupby(KEY).day.min()
     milestones = pd.concat([opened.rename("open"), created.rename("create"), same_product_first], axis=1)
     creators = milestones.loc[milestones.create.ge(milestones.open)]
-    funnel_published = creators.loc[creators.launch.ge(creators.create)].index
+    matched_publishes = creators.loc[creators.launch.ge(creators.create)]
+    funnel_published = matched_publishes.index
     lead_pairs = leads.loc[leads.leads.gt(0)].set_index(KEY).index
-    a["created_asset"] = a.index.isin(creators.index.get_level_values(ID))
-    a["funnel_published"] = a.index.isin(funnel_published.get_level_values(ID))
+    a["created_date"] = creators.create.groupby(level=ID).min()
+    a["funnel_publish_date"] = matched_publishes.launch.groupby(level=ID).min()
+    a["created_asset"] = a.created_date.notna()
+    a["funnel_published"] = a.funnel_publish_date.notna()
     a["funnel_lead"] = a.index.isin(funnel_published.intersection(lead_pairs).get_level_values(ID))
 
     initial = account_ids(actions.loc[actions.age.between(1, 28)])
@@ -138,20 +141,28 @@ def rate_table(a, numerator, split=None):
     return pd.DataFrame(rows, columns=["Group", "Count", "Eligible", "Rate"])
 
 
-def weekly_activation(a, week_or_month):
-    eligible = a.loc[a.signup_date.add(7 * DAY).le(a.end)]
-    period = eligible.signup_date.dt.to_period(week_or_month).dt.start_time
-    table = rate_table(eligible.assign(period=period), eligible.ttp.between(0, 7), "period")
-    return table.rename(columns={"Group": "Period"})
-
-
-def template_publish_curve(a):
-    eligible = a.loc[a.open.add(7 * DAY).le(a.end)]
+def onboarding_trends(a, *, monthly):
+    """Compare signup cohorts at equal account ages."""
+    period = a.signup_date.dt.to_period("M" if monthly else "W-SUN").dt.start_time
     rows = []
-    for day in range(8):
-        frame = rate_table(eligible, eligible.open_to_publish.between(0, day), "opening_template")
-        rows.append(frame.assign(Day=day))
-    return pd.concat(rows, ignore_index=True)
+    for start, cohort in a.groupby(period):
+        day7 = cohort.signup_date.add(7 * DAY)
+        eligible = cohort.loc[day7.le(cohort.end)]
+        activated = int(eligible.ttp.between(0, 7).sum())
+        creators = eligible.loc[eligible.created_date.le(day7.reindex(eligible.index))]
+        unpublished = int((~creators.funnel_publish_date.le(day7.reindex(creators.index))).sum())
+        speed_base = cohort.loc[cohort.signup_date.add(PUBLISH_TIME_FOLLOWUP_DAYS * DAY).le(cohort.end)]
+        published = speed_base.ttp.loc[speed_base.ttp.between(0, PUBLISH_TIME_FOLLOWUP_DAYS)]
+        rows.append((
+            start, activated, len(eligible), rate(activated, len(eligible)),
+            unpublished, len(creators), rate(unpublished, len(creators)),
+            published.median(), len(published), len(speed_base),
+        ))
+    return pd.DataFrame(rows, columns=[
+        "Period", "Activated by day 7", "Signups with 7 days", "Activation rate",
+        "Unpublished creators", "Creators by day 7", "Unpublished creator rate",
+        "Median days", "Publishers in window", "Signups with follow-up",
+    ])
 
 
 def activation_funnel(a):
@@ -196,6 +207,18 @@ def activity_trend(snapshot, a, lo, hi, *, fixed, monthly):
         edit_only = active - events.loc[events.published_again, ID].nunique()
         rows.append((start, active, len(cohort), rate(active, len(cohort)), edit_only))
     return pd.DataFrame(rows, columns=["Period", "Count", "Eligible", "Rate", "Live edits only"])
+
+
+def active_return_trend(snapshot, a, lo, hi, *, monthly):
+    """Track whether the same accounts return across adjacent 28-day windows."""
+    rows = []
+    for start, end in complete_periods(lo, hi, monthly=monthly):
+        observed = a.index[a.end.ge(end)]
+        previous = _active_ids(snapshot, end - 55 * DAY, end - 28 * DAY).intersection(observed)
+        current = _active_ids(snapshot, end - 27 * DAY, end)
+        returned = len(previous.intersection(current))
+        rows.append((start, end, returned, len(previous), rate(returned, len(previous))))
+    return pd.DataFrame(rows, columns=["Period", "Window ends", "Returned", "Previously active", "Rate"])
 
 
 def established_trend(snapshot, a, lo, hi, *, monthly):

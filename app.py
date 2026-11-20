@@ -88,7 +88,7 @@ def show_table(frame, key, *, visible=False):
     if "Period" in table:
         table["Period"] = pd.to_datetime(table.Period).dt.strftime("%Y-%m-%d")
     display = table.copy()
-    for column in ("Rate", "From previous stage"):
+    for column in ("Rate", "From previous stage", "Activation rate", "Unpublished creator rate"):
         if column in display:
             display[column] = display[column].map(lambda v: f"{v:.1%}" if pd.notna(v) else "—")
     with (nullcontext() if visible else st.expander("View counts and download table")):
@@ -187,11 +187,14 @@ def period_chart(frame, monthly, metric, *, key, fmt, details, height=175, color
     if frame.empty:
         st.info("Select a complete calendar week or month to see this trend.")
         return
+    if not frame[metric].notna().any():
+        st.info("No eligible accounts match this selection.")
+        return
     dates = pd.to_datetime(frame.Period)
     labels = dates.dt.strftime("%b %Y" if monthly else "%d %b %Y")
     data = frame.assign(**{"Calendar period": labels})
     chart = alt.Chart(data).mark_line(
-        point=alt.OverlayMarkDef(size=43, filled=True), strokeWidth=2.3, color=color
+        point=alt.OverlayMarkDef(size=43, filled=True, color=color), strokeWidth=2.3, color=color
     ).encode(
         x=alt.X("Calendar period:O", sort=labels.tolist(), title=None,
                 axis=alt.Axis(labelAngle=0, labelOverlap="greedy", labelPadding=7)),
@@ -199,7 +202,7 @@ def period_chart(frame, monthly, metric, *, key, fmt, details, height=175, color
                 scale=alt.Scale(zero=True)),
         tooltip=[alt.Tooltip("Calendar period:O", title="Month" if monthly else "Week starting"),
                  alt.Tooltip(f"{metric}:Q", format=fmt),
-                 *[alt.Tooltip(f"{name}:Q", format=",") for name in details]],
+                 *[alt.Tooltip(f"{name}:Q", format=",") for name in details if name != metric]],
     ).properties(height=height).configure_view(stroke=None)
     st.altair_chart(chart, use_container_width=True, key=key)
 
@@ -234,74 +237,82 @@ def health(s, a, _value):
     show_table(display, "product_health_trends")
 
 
-def publish_percentiles(a):
+def publish_percentiles(a, split_name):
     publishers = a.loc[a.ttp.notna()].copy()
     if publishers.empty:
         st.info("No accounts in this selection have a successful publish.")
         return
-    publishers["device"] = publishers.primary_builder_device.fillna("Unknown").str.title()
-    publishers["template"] = publishers.used_template.map({1: "Used a template", 0: "Without a template"}).fillna("Unknown")
-    groups = [
-        ("Builder device", dm.time_to_publish(publishers, "device"), ["Desktop", "Mobile", "Tablet", "Unknown"]),
-        ("Template use on first live asset", dm.time_to_publish(publishers, "template"),
-         ["Used a template", "Without a template", "Unknown"]),
-    ]
-    upper = max(5, ceil(max(table["P90 (days)"].max() for _, table, _ in groups) / 5) * 5)
-    strong = alt.condition("datum.Group === 'Desktop' || datum.Group === 'Used a template'",
-                           alt.value("#087C70"), alt.value("#A45137"))
-    light = alt.condition("datum.Group === 'Desktop' || datum.Group === 'Used a template'",
-                          alt.value("#AAD8D0"), alt.value("#F0BDAC"))
+    first_asset = st.toggle(
+        "Compare template use on the first live asset",
+        key="ttp_first_asset_template",
+        help="Overrides the shared comparison for this chart. This attribute is recorded when an asset goes live.",
+    )
+    if first_asset:
+        split = "first_asset_template"
+        publishers[split] = publishers.used_template.map(
+            {1: "Used a template", 0: "Without a template"}
+        ).fillna("Unknown")
+        order = ["Used a template", "Without a template", "Unknown"]
+    else:
+        split = dm.ONBOARDING_DIMENSIONS[split_name]
+        order = dm.TEMPLATE_GROUPS if split_name == dm.OPENING_TEMPLATE else "ascending"
+        if split_name == "Builder device":
+            publishers[split] = publishers[split].fillna("Unknown").str.title()
+        st.caption(f"Grouped by {split_name.lower()}.")
+
+    table = dm.time_to_publish(publishers, split).round(1)
+    upper = max(5, ceil(table["P90 (days)"].max() / 5) * 5)
     scale = alt.Scale(domain=[0, upper], nice=False)
-    details = []
-    for i, (label, table, order) in enumerate(groups):
-        st.markdown(f"**{label}**")
-        table = table.round(1)
-        details.append(table.assign(Comparison=label))
-        axis = alt.Axis(title="Days since signup" if i == 0 else None,
-                        orient="top" if i == 0 else "bottom", tickMinStep=1,
-                        labels=i == 0, ticks=i == 0, grid=True, domain=False)
-        x = alt.X("P25 (days):Q", scale=scale, axis=axis)
-        y = alt.Y("Group:N", sort=[*order, *[g for g in table.Group if g not in order]], title=None,
-                  axis=alt.Axis(ticks=False, domain=False, labelPadding=12, minExtent=150, labelLimit=150))
-        base = alt.Chart(table).encode(
-            y=y,
-            tooltip=["Group:N", alt.Tooltip("Publishers:Q", format=","),
-                     *[alt.Tooltip(f"{metric}:Q", format=".1f")
-                       for metric in ("P25 (days)", "Median (days)", "P75 (days)", "P90 (days)")]],
-        )
-        middle = base.mark_bar(size=11, cornerRadius=2).encode(x=x, x2="P75 (days):Q", color=strong)
-        tail = base.mark_rule(strokeWidth=3, strokeCap="round").encode(
-            x=alt.X("P75 (days):Q", scale=scale, axis=axis), x2="P90 (days):Q", color=light)
-        median = base.mark_tick(orient="vertical", size=19, thickness=2.5, color="#163740").encode(
-            x=alt.X("Median (days):Q", scale=scale, axis=axis))
-        chart = (tail + middle + median).properties(height=32 * len(table)).configure_view(stroke=None)
-        st.altair_chart(chart, use_container_width=True, key=f"publish_percentiles_{i}")
+    axis = alt.Axis(tickMinStep=1, tickCount=6, grid=True, domain=False)
+    base = alt.Chart(table).encode(
+        y=alt.Y("Group:N", sort=order, title=None,
+                axis=alt.Axis(ticks=False, domain=False, labelPadding=10, labelLimit=175)),
+        tooltip=["Group:N", alt.Tooltip("Publishers:Q", format=","),
+                 *[alt.Tooltip(f"{metric}:Q", format=".1f")
+                   for metric in ("P25 (days)", "Median (days)", "P75 (days)", "P90 (days)")]],
+    )
+    middle = base.mark_rule(strokeWidth=11, strokeCap="round", color=COLORS[0]).encode(
+        x=alt.X("P25 (days):Q", scale=scale, axis=axis, title="Days since signup"),
+        x2="P75 (days):Q",
+    )
+    tail = base.mark_rule(strokeWidth=3, strokeCap="round", color="#AAD8D0").encode(
+        x=alt.X("P75 (days):Q", scale=scale, axis=axis, title="Days since signup"), x2="P90 (days):Q",
+    )
+    median = base.mark_tick(orient="vertical", size=19, thickness=2.5, color="#163740").encode(
+        x=alt.X("Median (days):Q", scale=scale, axis=axis, title="Days since signup"),
+    )
+    chart = (tail + middle + median).properties(height=max(156, 38 * len(table) + 48)).configure_view(stroke=None)
+    st.altair_chart(chart, width="stretch", key="publish_percentiles")
     st.caption("The thick bar spans P25 to P75, the thin line extends to P90, and the dark tick marks the median.")
-    table = pd.concat(details, ignore_index=True)
-    show_table(table[["Comparison", "Group", "Publishers", "Median (days)", "P25 (days)",
+    show_table(table[["Group", "Publishers", "Median (days)", "P25 (days)",
                       "P75 (days)", "P90 (days)", "Mean (days)"]], "time_to_first_publish")
 
 
-def show_template_curve(a, value):
-    table = dm.template_publish_curve(a)
-    if table.empty:
-        st.info("No builder entrants in this selection have seven days of follow-up.")
-        return
-    st.caption("Share of builder entrants who had published by each day after first opening the builder. The same accounts are followed through day 7.")
-    chart = alt.Chart(table).mark_line(
-        point=alt.OverlayMarkDef(size=50), interpolate="step-after", strokeWidth=2.5
-    ).encode(
-        x=alt.X("Day:Q", title="Days since first builder open", axis=alt.Axis(tickMinStep=1)),
-        y=alt.Y(f"{value}:Q", title="Share published" if value == "Rate" else "Accounts published",
-                axis=alt.Axis(format=".0%" if value == "Rate" else ","), scale=alt.Scale(zero=True)),
-        color=alt.Color("Group:N", title=None,
-                        scale=alt.Scale(domain=dm.TEMPLATE_GROUPS[:2], range=[COLORS[0], COLORS[2]]),
-                        legend=alt.Legend(orient="top")),
-        tooltip=[alt.Tooltip("Day:Q"), alt.Tooltip("Group:N"),
-                 alt.Tooltip("Rate:Q", format=".1%"), "Count:Q", "Eligible:Q"],
-    ).properties(height=220).configure_view(stroke=None)
-    st.altair_chart(chart, use_container_width=True, key="activation_by_template")
-    show_table(table, "activation_by_template")
+def show_onboarding_trends(a, value):
+    st.subheader("Onboarding trends by signup cohort")
+    st.caption("Groups use the signup date and the same follow-up window for each metric. The date filter can include part of a signup month.")
+    cadence = st.radio("Cohort size", ["Week", "Month"], index=1, horizontal=True, key="activation_cohort_size")
+    monthly = cadence == "Month"
+    trend = dm.onboarding_trends(a, monthly=monthly)
+    count = value == "Count"
+    rate_format = "," if count else ".1%"
+    cards = [
+        ("7-day activation", "First successful publishes by signup day 7.",
+         "Activated by day 7" if count else "Activation rate", rate_format,
+         ("Activated by day 7", "Signups with 7 days"), COLORS[0]),
+        ("Median time to publish", f"Days to first publish among accounts that published within {dm.PUBLISH_TIME_FOLLOWUP_DAYS} days.",
+         "Median days", ".1f", ("Publishers in window", "Signups with follow-up"), COLORS[1]),
+        ("Creators still unpublished", "Among accounts that created an asset by day 7, those still unpublished at day 7.",
+         "Unpublished creators" if count else "Unpublished creator rate", rate_format,
+         ("Unpublished creators", "Creators by day 7"), COLORS[2]),
+    ]
+    for column, (title, detail, metric, fmt, fields, color) in zip(st.columns(3), cards):
+        with column.container(border=True):
+            st.markdown(f"**{title}**")
+            st.caption(detail)
+            period_chart(trend, monthly, metric, key=f"onboarding_{metric}", fmt=fmt,
+                         details=fields, height=140, color=color)
+    show_table(trend, "onboarding_trends")
 
 
 def onboarding(s, a, value):
@@ -326,24 +337,17 @@ def onboarding(s, a, value):
     st.caption("Share of selected signups reaching each stage by the data cutoff.")
     show_funnel(dm.activation_funnel(a), value)
 
+    split_name = st.selectbox("Compare by", list(dm.ONBOARDING_DIMENSIONS), index=1, key="activation_split",
+                              help="Groups both the 7-day activation and time-to-first-publish charts.")
     st.subheader("7-day activation breakdown")
-    split_name = st.selectbox("Compare by", list(dm.ONBOARDING_DIMENSIONS), index=1, key="activation_split")
     table = dm.rate_table(eligible, eligible.ttp.between(0, 7), dm.ONBOARDING_DIMENSIONS[split_name])
     plot(table, "Group", value, horizontal=True, key="activation_by_group",
          select=dm.TEMPLATE_GROUPS if split_name == dm.OPENING_TEMPLATE else None)
 
     st.subheader("Time to first publish")
     st.caption("Days from signup to first successful publish, among accounts that published. Use 7-day activation above to see how many got live.")
-    publish_percentiles(a)
-
-    st.subheader("How quickly builders publish after opening")
-    show_template_curve(a, value)
-
-    st.subheader("Activation by signup cohort")
-    st.caption("Each cohort includes signups with seven days of follow-up. Date selections can cut across a week or month.")
-    cadence = st.radio("Cohort size", ["Week", "Month"], horizontal=True, key="activation_cohort_size")
-    plot(dm.weekly_activation(a, "M" if cadence == "Month" else "W-SUN"), "Period", value,
-         key="activation_cohorts", line=True)
+    publish_percentiles(a, split_name)
+    show_onboarding_trends(a, value)
 
 
 def retention(s, a, _value):
@@ -354,6 +358,13 @@ def retention(s, a, _value):
     st.caption("Share of published accounts observed in the period that edited a live asset or published another one.")
     period_chart(activity, monthly, "Rate", key="active_share", fmt=".1%", details=("Count", "Eligible"))
     show_table(activity, "active_share")
+
+    st.subheader("28-day active return")
+    st.caption("Of the accounts that edited a live asset or published again in the previous 28 days, the share that did either in the next 28 days. Each point uses two adjacent 28-day windows ending on the last day of the displayed week or month.")
+    returned = dm.active_return_trend(s, a, start, end, monthly=monthly)
+    period_chart(returned, monthly, "Rate", key="active_return", fmt=".1%",
+                 details=("Returned", "Previously active"), color=COLORS[1])
+    show_table(returned, "active_return")
 
     st.subheader("Churn over time")
     left, right = st.columns(2)
