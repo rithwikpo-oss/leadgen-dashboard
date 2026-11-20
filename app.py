@@ -185,7 +185,7 @@ def activity_dates(snapshot, key):
     return start, end, cadence == "Month"
 
 
-def period_chart(frame, monthly, metric, *, key, fmt, details, height=175, color=COLORS[0]):
+def period_chart(frame, monthly, metric, *, key, fmt, details, height=175, color=COLORS[0], compact=False):
     if frame.empty:
         st.info("Select a complete calendar week or month to see this trend.")
         return
@@ -195,11 +195,13 @@ def period_chart(frame, monthly, metric, *, key, fmt, details, height=175, color
     dates = pd.to_datetime(frame.Period)
     labels = dates.dt.strftime("%b %Y" if monthly else "%d %b %Y")
     data = frame.assign(**{"Calendar period": labels})
+    axis = alt.Axis(labelAngle=0, labelOverlap="greedy", labelPadding=7, labelFlush=True)
+    if compact and monthly:
+        axis.labelExpr = "slice(datum.label, 0, 3) + \" '\" + slice(datum.label, -2)"
     chart = alt.Chart(data).mark_line(
         point=alt.OverlayMarkDef(size=43, filled=True, color=color), strokeWidth=2.3, color=color
     ).encode(
-        x=alt.X("Calendar period:O", sort=labels.tolist(), title=None,
-                axis=alt.Axis(labelAngle=0, labelOverlap="greedy", labelPadding=7)),
+        x=alt.X("Calendar period:O", sort=labels.tolist(), title=None, axis=axis),
         y=alt.Y(f"{metric}:Q", title=None, axis=alt.Axis(format=fmt, tickCount=4),
                 scale=alt.Scale(zero=True)),
         tooltip=[alt.Tooltip("Calendar period:O", title="Month" if monthly else "Week starting"),
@@ -292,28 +294,28 @@ def publish_percentiles(a, split_name):
 
 def show_onboarding_trends(a, value):
     st.subheader("Onboarding trends by signup cohort")
-    st.caption("Groups use the signup date and the same follow-up window for each metric. The date filter can include part of a signup month.")
+    st.caption(
+        "Activation and creator drop-off use signup day 7. Median publish time uses first publishes within "
+        f"{dm.PUBLISH_TIME_FOLLOWUP_DAYS} days. The signup date filter can include part of a week or month."
+    )
     cadence = st.radio("Cohort size", ["Week", "Month"], index=1, horizontal=True, key="activation_cohort_size")
     monthly = cadence == "Month"
     trend = dm.onboarding_trends(a, monthly=monthly)
     count = value == "Count"
     rate_format = "," if count else ".1%"
     cards = [
-        ("7-day activation", "First successful publishes by signup day 7.",
-         "Activated by day 7" if count else "Activation rate", rate_format,
+        ("7-day activation", "Activated by day 7" if count else "Activation rate", rate_format,
          ("Activated by day 7", "Signups with 7 days"), COLORS[0]),
-        ("Median time to publish", f"Days to first publish among accounts that published within {dm.PUBLISH_TIME_FOLLOWUP_DAYS} days.",
-         "Median days", ".1f", ("Publishers in window", "Signups with follow-up"), COLORS[1]),
-        ("Creators still unpublished", "Among accounts that created an asset by day 7, those still unpublished at day 7.",
-         "Unpublished creators" if count else "Unpublished creator rate", rate_format,
+        ("Median time to publish", "Median days", ".1f",
+         ("Publishers in window", "Signups with follow-up"), COLORS[1]),
+        ("Creators still unpublished", "Unpublished creators" if count else "Unpublished creator rate", rate_format,
          ("Unpublished creators", "Creators by day 7"), COLORS[2]),
     ]
-    for column, (title, detail, metric, fmt, fields, color) in zip(st.columns(3), cards):
+    for column, (title, metric, fmt, fields, color) in zip(st.columns(3), cards):
         with column.container(border=True):
             st.markdown(f"**{title}**")
-            st.caption(detail)
             period_chart(trend, monthly, metric, key=f"onboarding_{metric}", fmt=fmt,
-                         details=fields, height=140, color=color)
+                         details=fields, height=140, color=color, compact=True)
     show_table(trend, "onboarding_trends")
 
 
