@@ -1,6 +1,6 @@
 # Lead Generation Dashboard
 
-Explore onboarding, account activity, retention, churn, and the validation recovery opportunity in the four case-study CSVs. Each view has its own filters for agency size, device, plan, industry, and first builder product. Onboarding also filters by opening-day template selection. Its Compare by control groups both the activation breakdown and the time-to-publish chart. The funnel uses the selected signup dates and sidebar filters.
+The dashboard opens on **Onboarding**, followed by **Product health**, **Retention & churn**, and **Opportunities**. Each view has its own filters for agency size, device, plan, industry, and first builder product. Onboarding also filters by opening-day template selection. Its Compare by control groups the activation breakdown and the time-to-publish chart. Comparison captions use the current selection and compare groups with at least 30 accounts each. Rate and count controls sit beside the relevant charts.
 
 ## Deploy on Streamlit Community Cloud
 
@@ -30,8 +30,8 @@ python -m streamlit run app.py
 | Lead coverage and repeat publishing | Accounts already published and subscribed when the calendar week or month starts |
 | Leads per 100 recorded visitors | Total leads divided by total recorded visitors across those accounts, multiplied by 100 |
 | Active share | Share of published accounts observed during the period that edited a live asset or published another one |
-| 28-day active return | Share of previously active accounts that take a qualifying action again in the next 28 days. Two adjacent 28-day windows end on the last day of the displayed calendar period |
-| 56-day builder inactivity | Share of at-risk accounts at the start of the period that reach 56 days without qualifying product activity |
+| Active again in the next 28 days | Share of previously active accounts that take a qualifying action again in the next 28 days. Two adjacent 28-day windows end on the last day of the displayed calendar period |
+| No live edits or additional publishes for 8 weeks | Share of at-risk accounts at the start of the period that reach 56 days without qualifying product activity |
 | Quiet accounts with 5+ leads | Share of still-subscribed accounts that had qualifying activity in the first of two 28-day windows, had no qualifying activity in the second, and received 5+ leads in the second |
 | Subscription churn | Share of period-start accounts that record a cancellation during the period |
 | 90-day churn diagnostic | Signup cohorts with 90 days of follow-up. The first-publish timing breakdown uses accounts still subscribed after day 14 |

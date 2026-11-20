@@ -23,6 +23,7 @@ DIMENSIONS = {
 }
 OPENING_TEMPLATE = "Opening-day template selection"
 TEMPLATE_GROUPS = ["Selected a template", "No template selected", "No builder open"]
+PUBLISH_TIMING_GROUPS = ("Signup days 0–7", "Signup days 8–14", "Unpublished by day 14")
 ONBOARDING_DIMENSIONS = {**DIMENSIONS, OPENING_TEMPLATE: "opening_template"}
 PUBLISH_TIME_FOLLOWUP_DAYS = 14
 DEFAULT_EXPORT_NAMES = {stem: f"{stem} - {stem}.csv" for stem in EXPORTS}
@@ -295,9 +296,10 @@ def churn_90d(a, split):
     eligible = a.loc[a.eligible_90d].copy()
     if split == "publish_timing":
         eligible = eligible.loc[eligible.subscribed_day_14].copy()
-        eligible["publish_timing"] = "Unpublished by day 14"
-        eligible.loc[eligible.ttp.between(0, 7), "publish_timing"] = "Signup days 0–7"
-        eligible.loc[eligible.ttp.between(8, 14), "publish_timing"] = "Signup days 8–14"
+        first_week, second_week, unpublished = PUBLISH_TIMING_GROUPS
+        eligible["publish_timing"] = unpublished
+        eligible.loc[eligible.ttp.between(0, 7), "publish_timing"] = first_week
+        eligible.loc[eligible.ttp.between(8, 14), "publish_timing"] = second_week
     return rate_table(eligible, eligible.canceled_90d, split)
 
 
