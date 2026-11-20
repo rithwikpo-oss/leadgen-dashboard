@@ -114,7 +114,7 @@ def show_funnel(frame, value):
     st.markdown(funnel_markup(frame, value), unsafe_allow_html=True)
     largest = frame.loc[frame["Drop-off"].idxmax()]
     if largest["Drop-off"]:
-        st.caption(f"Largest loss by count � {largest['Drop-off']:,} accounts before {largest.Stage.lower()} "
+        st.caption(f"Largest loss by count | {largest['Drop-off']:,} accounts before {largest.Stage.lower()} "
                    f"({1 - largest['From previous stage']:.1%} of the previous stage).")
     show_table(frame, "activation_funnel")
 
@@ -176,7 +176,7 @@ def health(s, a, value):
     n, d = dm.calendar_return(s, panel, end)
     window_start = end - 27 * dm.DAY
     st.subheader("Lead generation and repeat publishing")
-    st.caption(f"{window_start:%d %b}-{end:%d %b %Y} � Accounts published before this 28-day window and subscribed at its start.")
+    st.caption(f"{window_start:%d %b}-{end:%d %b %Y} | Accounts published before this 28-day window and subscribed at its start.")
     c = st.columns(4)
     leads = int(volume.leads.ge(5).sum())
     stat(c[0], "Received 5+ leads", pct(leads, len(volume)), f"{leads:,} of {len(volume):,} eligible accounts")
@@ -196,9 +196,9 @@ def health(s, a, value):
         latest = frame.iloc[-1]
         period = latest.Period.to_period("M" if monthly else "W-SUN")
         stat(active, f"Active accounts in latest {cadence.lower()}", f"{latest.Count:,}",
-             f"{period.start_time:%d %b}-{period.end_time:%d %b %Y} � {pct(latest.Count, latest.Eligible)} of {latest.Eligible:,} in scope")
+             f"{period.start_time:%d %b}-{period.end_time:%d %b %Y} | {pct(latest.Count, latest.Eligible)} of {latest.Eligible:,} in scope")
     stat(returned, "28-day active-account return", pct(n, d),
-         f"{n:,} of {d:,} active in the preceding 28 days � {window_start:%d %b}-{end:%d %b %Y}")
+         f"{n:,} of {d:,} active in the preceding 28 days | {window_start:%d %b}-{end:%d %b %Y}")
     detail = ("The April panel follows the same initially active accounts across periods." if fixed else
               "The activity rate uses published accounts with observation time during each displayed period.")
     st.caption(f"Activity means a live edit or a later distinct publish. {detail}")
@@ -367,7 +367,7 @@ def main():
             filters[label] = st.multiselect(label, options=options, placeholder="All", key=col)
         value = st.radio("Show charts as", ["Rate", "Count"], horizontal=True)
     a = dm.select_accounts(s.accounts, filters)
-    st.caption(f"Data through {s.cutoff:%d %b %Y} � {len(a):,} of {len(s.accounts):,} sub-accounts selected")
+    st.caption(f"Data through {s.cutoff:%d %b %Y} | {len(a):,} of {len(s.accounts):,} sub-accounts selected")
     if filters["First builder product"]:
         st.caption("Product is assigned from the first recorded builder open. The complete signup base includes accounts without a recorded open.")
     if a.empty:
