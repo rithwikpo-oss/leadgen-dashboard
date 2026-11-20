@@ -301,7 +301,7 @@ def publish_percentiles(a, split_name, activation):
         y=alt.Y("Group:N", sort=order, title=None,
                 axis=alt.Axis(ticks=False, domain=False, labelPadding=10, labelLimit=175)),
         tooltip=["Group:N", alt.Tooltip("Publishers:Q", format=","),
-                 alt.Tooltip("Median (days):Q", title="Typical time among publishers (days)", format=".1f"),
+                 alt.Tooltip("Median (days):Q", title="Median time to publish (days)", format=".1f"),
                  alt.Tooltip("P25 (days):Q", title="Typical range starts (days)", format=".1f"),
                  alt.Tooltip("P75 (days):Q", title="Typical range ends (days)", format=".1f"),
                  alt.Tooltip("P90 (days):Q", title="90% published within (days)", format=".1f"),
@@ -325,10 +325,10 @@ def publish_percentiles(a, split_name, activation):
     if bounds is not None:
         fast, slow = bounds
         if fast["Median (days)"] < slow["Median (days)"]:
-            st.caption(f"Typical time to publish was {fast['Median (days)']:g} days for {fast.Group} "
+            st.caption(f"Median time to publish was {fast['Median (days)']:g} days for {fast.Group} "
                        f"({fast.Publishers:,} publishers) versus {slow['Median (days)']:g} days for "
                        f"{slow.Group} ({slow.Publishers:,} publishers).")
-    st.caption("Thick bar shows the middle 50%. The tick marks typical time among publishers (median). "
+    st.caption("Thick bar shows the middle 50%. The tick marks the median time among publishers. "
                "The thin line ends at the day by which 90% of publishers went live.")
     show_table(table[["Group", "Publishers", "Median (days)", "P25 (days)",
                       "P75 (days)", "P90 (days)", "Mean (days)", "7-day activation",
@@ -338,7 +338,7 @@ def publish_percentiles(a, split_name, activation):
 
 def show_onboarding_trends(a):
     st.subheader("Onboarding trends by signup cohort")
-    st.caption(f"Activation and creator drop-off use signup day 7. Typical publish time here uses "
+    st.caption(f"Activation and creator drop-off use signup day 7. The median time to publish uses "
                f"first publishes within {dm.PUBLISH_TIME_FOLLOWUP_DAYS} days.")
     with st.popover("How are onboarding trends measured?"):
         st.write("Each signup cohort uses the same number of days from signup. "
@@ -353,7 +353,7 @@ def show_onboarding_trends(a):
     cards = [
         ("7-day activation", "Activated by day 7" if count else "Activation rate", rate_format,
          ("Activated by day 7", "Signups with 7 days"), COLORS[0]),
-        ("Typical time among publishers", "Median days", ".1f",
+        ("Median time to publish", "Median days", ".1f",
          ("Publishers in window", "Signups with follow-up"), COLORS[1]),
         ("Creators still unpublished", "Unpublished creators" if count else "Unpublished creator rate", rate_format,
          ("Unpublished creators", "Creators by day 7"), COLORS[2]),
@@ -388,7 +388,7 @@ def onboarding(s, a):
     creators = summary["Creators by day 7"]
     c = st.columns(3)
     stat(c[0], "7-day activation", pct(activated, len(eligible)), f"{activated:,} of {len(eligible):,} signups with 7 days of follow-up")
-    stat(c[1], "Typical time among publishers", f"{median:g} days" if pd.notna(median) else MISSING,
+    stat(c[1], "Median time to publish", f"{median:g} days" if pd.notna(median) else MISSING,
          f"{summary['Publishers in window']:,} accounts published by signup day {dm.PUBLISH_TIME_FOLLOWUP_DAYS}",
          help=f"Median days from signup to first publish for accounts with at least "
               f"{dm.PUBLISH_TIME_FOLLOWUP_DAYS} days of follow-up that published within that window.")
@@ -527,12 +527,14 @@ def churn_by_segment(s, a):
          f"{canceled:,} of {len(cohort):,} selected signups through the data cutoff")
     dimension = st.selectbox("Compare by", ["First-publish timing", *dm.DIMENSIONS], key="churn_split")
     split = "publish_timing" if dimension == "First-publish timing" else dm.DIMENSIONS[dimension]
-    order = list(dm.PUBLISH_TIMING_GROUPS) if split == "publish_timing" else None
+    table = dm.churn_90d(cohort, split)
+    # These groups sort by signup day, with unpublished accounts last.
+    order = sorted(table.Group) if split == "publish_timing" else None
     if split == "publish_timing":
         st.caption("Publishing groups use accounts still subscribed after signup day 14. The chart counts cancellations in those groups through day 90.")
     else:
         st.caption("The chart counts all cancellations by signup day 90 among signups with 90 days of follow-up.")
-    plot_bars(dm.churn_90d(cohort, split), chart_display("Show segment churn as", "segment_churn_display"),
+    plot_bars(table, chart_display("Show segment churn as", "segment_churn_display"),
               key="churn_by_segment", order=order, comparison="canceled by signup day 90")
 
 
